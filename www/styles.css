@@ -1,0 +1,130 @@
+:root {
+  --bg: #14161a;
+  --card: #1d2026;
+  --line: #2b2f37;
+  --text: #e8eaed;
+  --muted: #9aa0a9;
+  --free: #3ecf8e;
+  --working: #f5a524;
+  --accent: #d97757;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px 24px 40px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+h1 { margin: 0; font-size: 20px; }
+#summary { color: var(--muted); font-size: 14px; }
+
+input, select, textarea, button {
+  font: inherit;
+  color: var(--text);
+  background: #14161a;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+textarea { width: 100%; resize: vertical; }
+
+button { cursor: pointer; background: var(--card); }
+button:hover { border-color: var(--accent); }
+
+#addForm { display: flex; gap: 8px; margin-bottom: 20px; }
+#addForm input { flex: 1; }
+#addForm button { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+#list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--free);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.card.working { border-left-color: var(--working); }
+.card.ready { box-shadow: 0 0 0 2px var(--free) inset; }
+
+.top { display: flex; gap: 8px; align-items: center; }
+.top .name { flex: 1; font-weight: 600; background: transparent; border-color: transparent; }
+.top .name:hover, .top .name:focus { border-color: var(--line); }
+.icon { padding: 4px 8px; color: var(--muted); }
+
+.statusrow { display: flex; align-items: center; justify-content: space-between; }
+.badge { font-weight: 700; font-size: 15px; }
+.badge.free { color: var(--free); }
+.badge.working { color: var(--working); }
+
+.switch { position: relative; width: 52px; height: 28px; display: inline-block; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0;
+  background: var(--free);
+  border-radius: 28px;
+  transition: background .2s;
+  cursor: pointer;
+}
+.slider::before {
+  content: ""; position: absolute;
+  width: 22px; height: 22px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%;
+  transition: transform .2s;
+}
+.switch input:checked + .slider { background: var(--working); }
+.switch input:checked + .slider::before { transform: translateX(24px); }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { color: var(--muted); font-size: 12px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip { padding: 4px 10px; font-size: 12px; }
+
+.countdown { font-size: 18px; font-weight: 700; color: var(--working); }
+.countdown.ready { color: var(--free); }
+.resettext { color: var(--muted); font-size: 13px; }
+
+.continue {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  padding: 10px;
+}
+
+.hint { color: var(--muted); text-align: center; margin-top: 40px; }
+
+#toast {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+  background: #000; color: #fff; padding: 10px 16px;
+  border-radius: 10px; border: 1px solid var(--line);
+  max-width: 90vw; font-size: 14px;
+}
+
+/* ---- Penyesuaian Android ---- */
+body { padding: calc(16px + env(safe-area-inset-top)) 14px calc(40px + env(safe-area-inset-bottom)); }
+input, select, textarea { font-size: 16px; }
+#list { grid-template-columns: 1fr; }
+header { flex-direction: column; gap: 4px; align-items: flex-start; }
+.continue { padding: 14px; font-size: 16px; }
+.chip { padding: 8px 14px; font-size: 13px; }
+.icon { padding: 8px 12px; }
