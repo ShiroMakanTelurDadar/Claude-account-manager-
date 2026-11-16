@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14161a">
+  <title>Claude Account Manager</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Claude Account Manager</h1>
+    <div id="summary"></div>
+  </header>
+
+  <form id="addForm">
+    <input id="newName" placeholder="Nama akun (mis. Akun Utama)" required>
+    <button type="submit">+ Tambah</button>
+  </form>
+
+  <main id="list"></main>
+  <p class="hint" id="empty" hidden>Belum ada akun. Tambahkan satu di atas.</p>
+  <div id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
