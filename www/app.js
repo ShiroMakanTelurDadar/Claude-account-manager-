@@ -30,6 +30,7 @@ async function loadAccounts() {
     for (const a of list) {
       if (!Array.isArray(a.projects)) a.projects = [];
       if (typeof a.percent !== 'number') a.percent = 100;
+      if (!Array.isArray(a.notes)) a.notes = [];
     }
     return list;
   } catch { return []; }
@@ -212,10 +213,12 @@ async function openAccount(a, text, url) {
   await openClaude(url);
 }
 
-// Buka halaman login claude.ai di browser aplikasi, khusus untuk akun ini
+// Buka chat akun ini (kalau link sudah diisi) atau halaman login claude.ai di browser aplikasi
 async function connectAccount(a) {
-  await openAccount(a, '', LOGIN_URL);
-  toast(`Login ke akun "${a.name}" di browser ini. Login tersimpan terpisah untuk akun ini.`);
+  await openAccount(a, '', a.chatUrl || LOGIN_URL);
+  toast(a.chatUrl
+    ? `Membuka chat akun "${a.name}".`
+    : `Login ke akun "${a.name}" di browser ini. Login tersimpan terpisah untuk akun ini.`);
 }
 
 // ---------- Deteksi limit dari browser aplikasi ----------
@@ -237,12 +240,19 @@ function parseResetAt(text) {
   return d;
 }
 
-function onLimitSeen(accountId, text) {
+function onLimitSeen(accountId, text, url) {
   const a = accounts.find((x) => x.id === accountId);
   if (!a || !LIMIT_RE.test(text || '')) return;
+  // Simpan link chat tempat limit muncul, supaya Continue membuka chat itu
+  const chat = /^https:\/\/claude\.ai\/chat\//.test(url || '') ? url : null;
+  const chatChanged = !!chat && a.chatUrl !== chat;
+  if (chatChanged) a.chatUrl = chat;
   const at = parseResetAt(text);
   if (a.status === 'working' && a.resetAt) {
-    if (!at || Math.abs(Date.parse(a.resetAt) - at.getTime()) < 60000) return;
+    if (!at || Math.abs(Date.parse(a.resetAt) - at.getTime()) < 60000) {
+      if (chatChanged) commit();
+      return;
+    }
   }
   a.status = 'working';
   a.notified = false;
@@ -254,7 +264,7 @@ function onLimitSeen(accountId, text) {
 function initLimitWatcher() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.addListener) return;
-  G.addListener('pageText', (ev) => onLimitSeen(ev.accountId, ev.text));
+  G.addListener('pageText', (ev) => onLimitSeen(ev.accountId, ev.text, ev.url));
   drainLimitEvents();
 }
 
@@ -264,8 +274,104 @@ async function drainLimitEvents() {
   if (!native || !G || !G.takePending) return;
   try {
     const res = await G.takePending();
-    for (const it of (res.items || [])) onLimitSeen(it.accountId, it.text);
+    for (const it of (res.items || [])) onLimitSeen(it.accountId, it.text, it.url);
   } catch {}
+}
+
+// ---------- Note ----------
+const NOTE_COLORS = ['#ef4444', '#f59e0b', '#22c55e', '#22d3ee', '#818cf8', '#e879f9', '#f472b6', '#94a3b8'];
+
+function closeModal() {
+  const m = document.getElementById('modal');
+  if (m) m.remove();
+}
+
+function openModal(onBackdrop, ...kids) {
+  closeModal();
+  const m = el('div', { id: 'modal', class: 'modal' }, el('div', { class: 'mbox' }, ...kids));
+  m.addEventListener('click', (e) => { if (e.target === m) onBackdrop(); });
+  document.body.append(m);
+}
+
+// Dialog buat note baru: nama + warna penanda
+function openNoteCreate(a) {
+  let color = NOTE_COLORS[0];
+  const name = el('input', {
+    placeholder: 'Nama note', autocomplete: 'off', maxlength: '40',
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); create(); } },
+  });
+  const sw = NOTE_COLORS.map((c) => {
+    const b = el('button', {
+      type: 'button', class: 'swatch', 'aria-label': `Warna ${c}`,
+      onclick: () => { color = c; sw.forEach((x) => x.classList.toggle('on', x === b)); },
+    });
+    b.style.background = c;
+    return b;
+  });
+  sw[0].classList.add('on');
+  function create() {
+    a.notes.push({ id: uid(), name: name.value.trim() || 'Note', color, text: '' });
+    closeModal();
+    commit();
+  }
+  openModal(closeModal,
+    el('div', { class: 'mtitle', text: 'Buat note' }),
+    name,
+    el('div', { class: 'swatches' }, ...sw),
+    el('div', { class: 'mact' },
+      el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Buat', onclick: create }),
+    ),
+  );
+  name.focus();
+}
+
+// Jendela catatan: ketik bebas. Close note menyimpan otomatis.
+function openNoteEditor(a, n) {
+  let timer;
+  const area = el('textarea', { class: 'nedit', placeholder: 'Ketik catatan di sini...' });
+  area.value = n.text || '';
+  area.addEventListener('input', () => {
+    n.text = area.value;
+    clearTimeout(timer);
+    timer = setTimeout(saveAccounts, 400);
+  });
+  const close = () => {
+    clearTimeout(timer);
+    n.text = area.value;
+    closeModal();
+    commit();
+  };
+  const del = () => {
+    if (!confirm(`Hapus note "${n.name}"?`)) return;
+    clearTimeout(timer);
+    a.notes = a.notes.filter((x) => x.id !== n.id);
+    closeModal();
+    commit();
+  };
+  const dot = el('span', { class: 'mdot' });
+  dot.style.background = n.color;
+  openModal(close,
+    el('div', { class: 'mtitle' }, dot, el('span', { text: n.name })),
+    area,
+    el('div', { class: 'mact between' },
+      el('button', { type: 'button', class: 'btn-d', text: 'Hapus', onclick: del }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Close note', onclick: close }),
+    ),
+  );
+  area.focus();
+}
+
+function renderNotes(r, a) {
+  const sig = a.notes.map((n) => `${n.id}:${n.name}:${n.color}`).join('|');
+  if (r._nsig === sig) return;
+  r._nsig = sig;
+  r.nchips.replaceChildren(...a.notes.map((n) => {
+    const c = el('button', { type: 'button', class: 'nchip', onclick: () => openNoteEditor(a, n) },
+      el('span', { text: n.name }));
+    c.style.setProperty('--nc', n.color);
+    return c;
+  }));
 }
 
 // ---------- Status turunan satu akun ----------
@@ -293,7 +399,7 @@ async function doContinue(a) {
     return;
   }
   const p = a.projects[0];
-  await openAccount(a, buildCommand(a, p));
+  await openAccount(a, buildCommand(a, p), a.chatUrl);
   a.projects.shift();
   commit();
   toast(`Command untuk "${p.name}" disalin. Tempel di chat.`
@@ -340,6 +446,14 @@ function buildCard(a, index) {
   });
   const r2 = el('div', { class: 'r2' }, r.go, r.note, link, chev);
 
+  // Baris 3: penanda note (tampil hanya jika note dipasang di akun ini)
+  r.nchips = el('div', { class: 'nchips' });
+  r.nbtn = el('button', {
+    type: 'button', class: 'ntag', text: 'NOTE', 'aria-label': 'Buat note',
+    onclick: () => openNoteCreate(a),
+  });
+  const r3 = el('div', { class: 'r3' }, r.nchips, r.nbtn);
+
   // Panel detail
   r.name = el('input', {
     class: 'dname', placeholder: 'Nama akun', autocomplete: 'off',
@@ -385,9 +499,34 @@ function buildCard(a, index) {
     onchange: (e) => { a.command = e.target.value; commit(); },
   });
 
+  r.chat = el('input', {
+    type: 'url', inputmode: 'url', placeholder: 'https://claude.ai/chat/...', autocomplete: 'off',
+    onchange: (e) => {
+      const v = e.target.value.trim();
+      if (v && !/^https:\/\/claude\.ai\//.test(v)) {
+        toast('Link harus diawali https://claude.ai/');
+        e.target.value = a.chatUrl || '';
+        return;
+      }
+      a.chatUrl = v || null;
+      commit();
+    },
+  });
+  r.notesChk = el('input', {
+    type: 'checkbox',
+    onchange: (e) => { a.notesOn = e.target.checked; commit(); },
+  });
+
   const detail = el('div', { class: 'dwrap' }, el('div', { class: 'dinner' }, el('div', { class: 'dpad' },
     el('button', { type: 'button', class: 'connect', text: '🔗 Hubungkan akun ke browser aplikasi', onclick: () => connectAccount(a) }),
     el('div', { class: 'drow' }, r.name, del),
+    el('div', { class: 'field' },
+      el('label', { text: 'Link chat akun ini (dibuka oleh 🔗 dan Continue)' }),
+      r.chat,
+    ),
+    el('div', { class: 'field' },
+      el('label', { class: 'chk' }, r.notesChk, el('span', { text: 'Pasang note di akun ini' })),
+    ),
     el('div', { class: 'field only-free' }, el('label', { text: 'Sisa token (%)' }), r.pct),
     el('div', { class: 'field only-working' },
       el('label', { text: 'Limit reset pada (jam & tanggal)' }),
@@ -412,7 +551,7 @@ function buildCard(a, index) {
     ),
   )));
 
-  const root = el('section', { class: 'acc enter' }, r1, r2, detail);
+  const root = el('section', { class: 'acc enter' }, r1, r2, r3, detail);
   root.style.setProperty('--i', index);
   root._r = r;
   root.addEventListener('animationend', (e) => {
@@ -462,6 +601,7 @@ function refresh(root, a) {
   const r = root._r;
   const working = a.status === 'working';
   root.classList.toggle('open', openIds.has(a.id));
+  root.classList.toggle('notes-on', !!a.notesOn);
   r.sw.checked = working;
   r.stlabel.textContent = working ? 'Working' : 'Free';
   r.acctT.textContent = shortName(a.name);
@@ -472,8 +612,11 @@ function refresh(root, a) {
   setVal(r.pct, String(a.percent));
   setVal(r.when, a.resetAt ? toLocalInput(a.resetAt) : '');
   setVal(r.cmd, cmdTemplate(a));
+  setVal(r.chat, a.chatUrl || '');
+  r.notesChk.checked = !!a.notesOn;
   r.full.textContent = a.resetAt ? `Reset: ${fmt.format(new Date(a.resetAt))}` : '';
   renderProjects(r, a);
+  renderNotes(r, a);
   live(root, a);
 }
 
@@ -524,6 +667,7 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   accounts.push({
     id: uid(), name, status: 'free', percent: 100,
     resetAt: null, notified: false, command: DEFAULT_CMD, projects: [],
+    notes: [], notesOn: false, chatUrl: null,
   });
   input.value = '';
   commit();
