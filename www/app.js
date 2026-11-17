@@ -151,37 +151,50 @@ async function doContinue(a) {
   await openClaude();
   toast(`Command disalin. Buka akun "${a.name}" lalu tempel (tahan kolom chat → Tempel).`);
 }
-// ---------- Kartu akun ----------
-function card(a) {
-  const working = a.status === 'working';
-  const ready = working && a.resetAt && Date.parse(a.resetAt) <= Date.now();
+// ---------- Baris akun (ringkas, 1 baris per akun) ----------
+const openIds = new Set();
 
-  const top = el('div', { class: 'top' },
+function timeTag(a) {
+  if (a.status === 'working') {
+    if (!a.resetAt) return { text: '[?]', cls: 'wait' };
+    const t = Date.parse(a.resetAt);
+    if (t <= Date.now()) return { text: '[SIAP]', cls: 'ready' };
+    const d = new Date(t);
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const sameDay = d.toDateString() === new Date().toDateString();
+    return { text: sameDay ? `[${hm}]` : `[${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${hm}]`, cls: 'wait' };
+  }
+  return a.percent < 100
+    ? { text: `[${a.percent}%]`, cls: 'part' }
+    : { text: '[DONE]', cls: 'done' };
+}
+
+// Di baris, email Gmail ditampilkan tanpa @gmail.com supaya muat; nama lengkap ada di panel detail
+const shortName = (n) => n.replace(/@gmail\.com$/i, '');
+
+function toggleOpen(id) {
+  if (openIds.has(id)) openIds.delete(id); else openIds.add(id);
+  render();
+}
+
+function detail(a) {
+  const working = a.status === 'working';
+
+  const nameRow = el('div', { class: 'drow' },
     el('input', {
-      class: 'name', value: a.name,
+      class: 'dname', value: a.name, placeholder: 'Nama akun',
       onchange: (e) => { a.name = e.target.value.trim() || a.name; commit(); },
     }),
     el('button', {
-      class: 'icon', title: 'Hapus akun', text: '✕',
+      type: 'button', class: 'del', text: 'Hapus',
       onclick: () => {
         if (confirm(`Hapus akun "${a.name}"?`)) {
           accounts = accounts.filter((x) => x.id !== a.id);
+          openIds.delete(a.id);
           commit();
         }
       },
     }),
-  );
-
-  const badgeText = working
-    ? 'Working'
-    : (a.percent < 100 ? `Free · sisa token ${a.percent}%` : 'Free · token 100%');
-
-  const statusRow = el('div', { class: 'statusrow' },
-    el('span', { class: `badge ${working ? 'working' : 'free'}`, text: badgeText }),
-    el('label', { class: 'switch' },
-      el('input', { type: 'checkbox', checked: working, onchange: (e) => setStatus(a, e.target.checked ? 'working' : 'free') }),
-      el('span', { class: 'slider' }),
-    ),
   );
 
   let body;
@@ -198,11 +211,11 @@ function card(a) {
           commit();
         },
       }),
-      el('div', { class: 'row' },
+      el('div', { class: 'row2' },
         el('span', { class: 'resettext', text: 'Cepat atur:' }),
         ...[1, 2, 3, 5].map((h) => el('button', { type: 'button', class: 'chip', text: `+${h} jam`, onclick: () => setResetIn(a, h) })),
       ),
-      el('div', { class: `countdown${ready ? ' ready' : ''}`, 'data-reset': a.resetAt || '' }),
+      el('div', { class: 'countdown', 'data-countdown': a.resetAt || '' }),
       el('div', { class: 'resettext', text: a.resetAt ? `Reset: ${fmt.format(new Date(a.resetAt))}` : '' }),
     );
   } else {
@@ -227,10 +240,30 @@ function card(a) {
     }),
   );
 
-  const btn = el('button', { class: 'continue', text: '▶ Continue', onclick: () => doContinue(a) });
+  return el('div', { class: 'detail' }, nameRow, body, cmdField);
+}
 
-  return el('section', { class: `card ${working ? 'working' : ''}${ready ? ' ready' : ''}` },
-    top, statusRow, body, cmdField, btn);
+function card(a) {
+  const working = a.status === 'working';
+  const tag = timeTag(a);
+  const isOpen = openIds.has(a.id);
+
+  const main = el('div', { class: 'main', onclick: () => toggleOpen(a.id) },
+    el('span', { class: `st ${working ? 'working' : 'free'}`, text: working ? '#Working 📛' : '#Free ✅' }),
+    el('span', { class: 'nm', text: shortName(a.name) }),
+    el('span', { class: `tm ${tag.cls}`, text: tag.text, 'data-reset': working ? (a.resetAt || '') : '' }),
+  );
+
+  const sw = el('label', { class: 'switch', title: 'Free ⇄ Working' },
+    el('input', { type: 'checkbox', checked: working, onchange: (e) => setStatus(a, e.target.checked ? 'working' : 'free') }),
+    el('span', { class: 'slider' }),
+  );
+
+  const go = el('button', { type: 'button', class: 'go', title: 'Continue', text: '▶', onclick: () => doContinue(a) });
+
+  const row = el('div', { class: 'line' }, main, sw, go);
+  return el('section', { class: `acc ${working ? 'working' : 'free'}${tag.cls === 'ready' ? ' ready' : ''}` },
+    row, isOpen ? detail(a) : null);
 }
 
 function render() {
@@ -243,12 +276,19 @@ function render() {
 }
 
 function tick() {
-  document.querySelectorAll('[data-reset]').forEach((node) => {
-    const iso = node.getAttribute('data-reset');
+  document.querySelectorAll('[data-countdown]').forEach((node) => {
+    const iso = node.getAttribute('data-countdown');
     if (!iso) { node.textContent = ''; return; }
     const ms = Date.parse(iso) - Date.now();
     node.textContent = countdownText(ms);
     node.classList.toggle('ready', ms <= 0);
+  });
+  document.querySelectorAll('.tm[data-reset]').forEach((node) => {
+    const iso = node.getAttribute('data-reset');
+    if (iso && Date.parse(iso) <= Date.now() && !node.classList.contains('ready')) {
+      node.textContent = '[SIAP]';
+      node.className = 'tm ready';
+    }
   });
 }
 
