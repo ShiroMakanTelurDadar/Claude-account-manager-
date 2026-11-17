@@ -316,3 +316,13 @@ button { cursor: pointer; border: 0; background: none; }
 .mact .btn-d { padding: 9px 14px; }
 .btn-g { padding: 9px 14px; border-radius: 12px; font-size: 14px; color: var(--muted); border: 1px solid var(--line); }
 .nedit { flex: 1; min-height: 42vh; resize: none; line-height: 1.5; }
+
+/* ---- Ekspor / Impor data ---- */
+.tools { display: flex; gap: 8px; flex-wrap: wrap; }
+.tbtn {
+  padding: 6px 12px; font-size: 12px; border-radius: 999px; color: var(--sky);
+  border: 1px solid var(--line); background: rgba(125, 211, 252, .05);
+  transition: transform .15s, background .2s;
+}
+.tbtn:active { transform: scale(.95); background: rgba(125, 211, 252, .16); }
+#toast { z-index: 30; }
