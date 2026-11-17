@@ -1,11 +1,13 @@
-// Meneruskan status halaman dari content script ke aplikasi (native).
-// type "pageState": laporan limit/busy/reset/idle (tanpa balasan)
-// type "getCode"  : minta kode login terakhir yang terbaca dari email, balasan {code, at} atau {}
+// Meneruskan laporan halaman dan permintaan bantuan login dari content script ke aplikasi (native).
 browser.runtime.onMessage.addListener((msg) => {
-  if (!msg) return;
+  if (!msg) return undefined;
   if (msg.type === 'pageState' && typeof msg.state === 'string') {
     browser.runtime.sendNativeMessage('browser', msg).catch(() => {});
-  } else if (msg.type === 'getCode') {
+    return undefined;
+  }
+  if (msg.type === 'loginHelp') {
+    // Jawaban native (email akun dan kode terbaru) dikembalikan ke content script
     return browser.runtime.sendNativeMessage('browser', msg).catch(() => null);
   }
+  return undefined;
 });
