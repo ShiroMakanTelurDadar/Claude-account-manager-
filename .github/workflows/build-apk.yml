@@ -23,16 +23,45 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Pasang gecko.js di index.html
+        run: |
+          sed -i 's#<script src="app.js"></script>#<script src="app.js"></script>\n  <script src="gecko.js"></script>#' www/index.html
+          grep -q "gecko.js" www/index.html
+
       - name: Create Android project
         run: |
           npx cap add android
           npx cap sync android
 
-      - name: Add notification permissions
+      - name: Manifest (izin notifikasi + layar GeckoView)
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#</manifest>#    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n</manifest>#' "$M"
+          sed -i 's#</application>#    <activity android:name=".MainActivity$GeckoActivity" android:exported="false" android:theme="@style/AppTheme.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" />\n    </application>#' "$M"
           cat "$M"
+
+      - name: Tambahkan GeckoView (arm64 saja, supaya kecil)
+        run: |
+          set -e
+          curl -fsSL https://maven.mozilla.org/maven2/org/mozilla/geckoview/geckoview-arm64-v8a/maven-metadata.xml -o meta.xml
+          GV=$(grep -oP '(?<=<version>)[0-9][^<]*' meta.xml | sort -V | tail -1)
+          test -n "$GV"
+          echo "Memakai GeckoView $GV"
+
+          cd android
+          sed -i 's/compileSdkVersion = 34/compileSdkVersion = 36/' variables.gradle
+          sed -i 's#com.android.tools.build:gradle:[0-9.]*#com.android.tools.build:gradle:8.9.1#' build.gradle
+          sed -i 's#gradle-[0-9.]*-bin.zip#gradle-8.11.1-bin.zip#' gradle/wrapper/gradle-wrapper.properties
+          printf '\nandroid.suppressUnsupportedCompileSdk=36\norg.gradle.jvmargs=-Xmx3g\n' >> gradle.properties
+
+          printf '\nallprojects {\n    repositories {\n        maven { url "https://maven.mozilla.org/maven2/" }\n    }\n}\n' >> build.gradle
+
+          sed -i "0,/defaultConfig {/s//defaultConfig {\n        ndk { abiFilters 'arm64-v8a' }/" app/build.gradle
+          sed -i "0,/^dependencies {/s//dependencies {\n    implementation 'org.mozilla.geckoview:geckoview-arm64-v8a:$GV'/" app/build.gradle
+
+          mkdir -p app/src/main/java/com/local/claudeaccountmanager
+          cp ../native/MainActivity.java app/src/main/java/com/local/claudeaccountmanager/MainActivity.java
+          grep -n "geckoview\|abiFilters" app/build.gradle
 
       - name: Build debug APK
         working-directory: android
@@ -43,3 +72,4 @@ jobs:
         with:
           name: ClaudeAccountManager-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 3
