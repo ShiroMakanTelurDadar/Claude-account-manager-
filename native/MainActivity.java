@@ -40,7 +40,8 @@ public class MainActivity extends BridgeActivity {
     @CapacitorPlugin(name = "GeckoBrowser")
     public static class GeckoBrowser extends Plugin {
         private static GeckoBrowser sInstance;
-        // Banner limit yang terdeteksi saat layar utama sedang di belakang browser
+        // Status halaman (limit / busy / reset / idle) yang terdeteksi saat layar utama sedang di belakang browser.
+        // Tiap item: {accountId, state, text, url, waktu-ms}
         private static final ArrayList<String[]> PENDING = new ArrayList<>();
 
         @Override
@@ -48,18 +49,30 @@ public class MainActivity extends BridgeActivity {
             sInstance = this;
         }
 
-        // Dipanggil dari GeckoActivity saat halaman menampilkan banner limit
-        static synchronized void emit(String accountId, String text) {
+        // Dipanggil dari GeckoActivity saat halaman melapor status
+        static synchronized void emit(String accountId, String state, String text, String url) {
+            long now = System.currentTimeMillis();
+            boolean dup = false;
             if (!PENDING.isEmpty()) {
                 String[] last = PENDING.get(PENDING.size() - 1);
-                if (last[0].equals(accountId) && last[1].equals(text)) return;
+                if (last[0].equals(accountId) && last[1].equals(state) && last[2].equals(text)) {
+                    // Laporan yang sama (mis. heartbeat busy): cukup perbarui url dan waktunya
+                    last[3] = url;
+                    last[4] = String.valueOf(now);
+                    dup = true;
+                }
             }
-            PENDING.add(new String[]{accountId, text});
-            if (PENDING.size() > 20) PENDING.remove(0);
+            if (!dup) {
+                PENDING.add(new String[]{accountId, state, text, url, String.valueOf(now)});
+                if (PENDING.size() > 20) PENDING.remove(0);
+            }
             if (sInstance != null) {
                 JSObject data = new JSObject();
                 data.put("accountId", accountId);
+                data.put("state", state);
                 data.put("text", text);
+                data.put("url", url);
+                data.put("at", now);
                 sInstance.notifyListeners("pageText", data);
             }
         }
@@ -81,7 +94,10 @@ public class MainActivity extends BridgeActivity {
                 for (String[] it : PENDING) {
                     JSObject o = new JSObject();
                     o.put("accountId", it[0]);
-                    o.put("text", it[1]);
+                    o.put("state", it[1]);
+                    o.put("text", it[2]);
+                    o.put("url", it[3]);
+                    o.put("at", Long.parseLong(it[4]));
                     arr.put(o);
                 }
                 PENDING.clear();
@@ -101,7 +117,7 @@ public class MainActivity extends BridgeActivity {
         private static boolean sExtReady = false;
         private static volatile String sCurrentAccountId = "default";
 
-        // Menerima teks banner limit dari ekstensi limitwatch
+        // Menerima status halaman (limit / busy / reset / idle) dari ekstensi limitwatch
         private static final WebExtension.MessageDelegate MESSAGE_DELEGATE =
                 new WebExtension.MessageDelegate() {
                     @Override
@@ -109,8 +125,13 @@ public class MainActivity extends BridgeActivity {
                                                          WebExtension.MessageSender sender) {
                         try {
                             if (message instanceof JSONObject) {
-                                String text = ((JSONObject) message).optString("text", "");
-                                if (!text.isEmpty()) GeckoBrowser.emit(sCurrentAccountId, text);
+                                JSONObject msg = (JSONObject) message;
+                                String state = msg.optString("state", "limit");
+                                String text = msg.optString("text", "");
+                                String url = msg.optString("url", "");
+                                if (!"limit".equals(state) || !text.isEmpty()) {
+                                    GeckoBrowser.emit(sCurrentAccountId, state, text, url);
+                                }
                             }
                         } catch (Exception ignored) {
                         }
