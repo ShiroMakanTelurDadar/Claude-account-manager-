@@ -1,14 +1,24 @@
 package com.local.claudeaccountmanager;
 
 import android.app.Activity;
+import android.app.Notification;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.service.notification.NotificationListenerService;
+import android.service.notification.StatusBarNotification;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.core.app.NotificationManagerCompat;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.JSArray;
@@ -27,6 +37,9 @@ import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebExtension;
 
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
 
@@ -74,6 +87,38 @@ public class MainActivity extends BridgeActivity {
                 data.put("url", url);
                 data.put("at", now);
                 sInstance.notifyListeners("pageText", data);
+            }
+        }
+
+        // Dipanggil dari MailCodeListener saat kode login terbaca dari notifikasi email
+        static void emitCode(String code, String email, long at) {
+            if (sInstance == null) return;
+            JSObject data = new JSObject();
+            data.put("code", code);
+            data.put("email", email);
+            data.put("at", at);
+            sInstance.notifyListeners("mailCode", data);
+        }
+
+        // Cek apakah akses notifikasi untuk aplikasi ini sudah diaktifkan
+        @PluginMethod
+        public void isListenerEnabled(PluginCall call) {
+            Set<String> pk = NotificationManagerCompat.getEnabledListenerPackages(getContext());
+            JSObject res = new JSObject();
+            res.put("enabled", pk.contains(getContext().getPackageName()));
+            call.resolve(res);
+        }
+
+        // Buka layar pengaturan "Akses notifikasi"
+        @PluginMethod
+        public void openListenerSettings(PluginCall call) {
+            try {
+                Intent i = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getActivity().startActivity(i);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Tidak bisa membuka pengaturan akses notifikasi");
             }
         }
 
@@ -126,6 +171,16 @@ public class MainActivity extends BridgeActivity {
                         try {
                             if (message instanceof JSONObject) {
                                 JSONObject msg = (JSONObject) message;
+                                // Content script meminta kode login terakhir dari email
+                                if ("getCode".equals(msg.optString("type"))) {
+                                    JSONObject out = new JSONObject();
+                                    long age = System.currentTimeMillis() - MailCodeListener.sCodeAt;
+                                    if (!MailCodeListener.sCode.isEmpty() && age < MailCodeListener.CODE_TTL) {
+                                        out.put("code", MailCodeListener.sCode);
+                                        out.put("at", MailCodeListener.sCodeAt);
+                                    }
+                                    return GeckoResult.<Object>fromValue(out);
+                                }
                                 String state = msg.optString("state", "limit");
                                 String text = msg.optString("text", "");
                                 String url = msg.optString("url", "");
@@ -246,6 +301,81 @@ public class MainActivity extends BridgeActivity {
                 session = null;
             }
             super.onDestroy();
+        }
+    }
+
+    // Membaca notifikasi email masuk (Gmail dll). Kalau isinya kode login Claude:
+    // kode disalin ke clipboard otomatis dan disimpan supaya halaman login bisa menempelkannya.
+    // Perlu izin: Pengaturan > Akses notifikasi > Claude Account Manager.
+    public static class MailCodeListener extends NotificationListenerService {
+        // Kode dicari dulu setelah kata "code"/"kode", kalau tidak ada: angka 6 digit yang berdiri sendiri.
+        // Kalau format kode dari Claude berubah, sesuaikan dua pola ini.
+        private static final Pattern CODE_KEYED = Pattern.compile(
+                "(?:code|kode)[^0-9]{0,40}?(?<![0-9])([0-9]{4,8})(?![0-9])", Pattern.CASE_INSENSITIVE);
+        private static final Pattern CODE_ANY = Pattern.compile("(?<![0-9])([0-9]{6})(?![0-9])");
+
+        static final long CODE_TTL = 10 * 60 * 1000L;
+        static volatile String sCode = "";
+        static volatile String sEmail = "";
+        static volatile long sCodeAt = 0;
+
+        @Override
+        public void onNotificationPosted(StatusBarNotification sbn) {
+            try {
+                handle(sbn);
+            } catch (Exception ignored) {
+            }
+        }
+
+        private void handle(StatusBarNotification sbn) {
+            if (sbn == null || getPackageName().equals(sbn.getPackageName())) return;
+            Notification n = sbn.getNotification();
+            if (n == null || n.extras == null) return;
+            Bundle ex = n.extras;
+
+            StringBuilder sb = new StringBuilder();
+            add(sb, ex.getCharSequence(Notification.EXTRA_TITLE));
+            add(sb, ex.getCharSequence(Notification.EXTRA_TEXT));
+            add(sb, ex.getCharSequence(Notification.EXTRA_BIG_TEXT));
+            add(sb, ex.getCharSequence(Notification.EXTRA_SUMMARY_TEXT));
+            CharSequence[] lines = ex.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+            if (lines != null) for (CharSequence l : lines) add(sb, l);
+            add(sb, n.tickerText);
+            String all = sb.toString();
+
+            String low = all.toLowerCase();
+            if (!low.contains("claude") && !low.contains("anthropic")) return;
+            String code = extractCode(all);
+            if (code == null) return;
+
+            long now = System.currentTimeMillis();
+            // Gmail sering memperbarui notifikasi yang sama berkali-kali
+            if (code.equals(sCode) && now - sCodeAt < 30000) return;
+
+            // Gmail mengisi sub text dengan alamat akun penerima
+            CharSequence sub = ex.getCharSequence(Notification.EXTRA_SUB_TEXT);
+            String email = (sub != null && sub.toString().contains("@")) ? sub.toString() : "";
+
+            sCode = code;
+            sEmail = email;
+            sCodeAt = now;
+
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Kode login Claude", code));
+            Toast.makeText(getApplicationContext(), "Kode Claude " + code + " disalin", Toast.LENGTH_LONG).show();
+            GeckoBrowser.emitCode(code, email, now);
+        }
+
+        private static void add(StringBuilder sb, CharSequence cs) {
+            if (cs != null && cs.length() > 0) sb.append(cs).append('\n');
+        }
+
+        private static String extractCode(String text) {
+            Matcher m = CODE_KEYED.matcher(text);
+            if (m.find()) return m.group(1);
+            m = CODE_ANY.matcher(text);
+            if (m.find()) return m.group(1);
+            return null;
         }
     }
 }
