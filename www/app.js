@@ -255,6 +255,17 @@ function initLimitWatcher() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.addListener) return;
   G.addListener('pageText', (ev) => onLimitSeen(ev.accountId, ev.text));
+  drainLimitEvents();
+}
+
+// Ambil banner limit yang tertangkap saat layar utama di belakang browser
+async function drainLimitEvents() {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.takePending) return;
+  try {
+    const res = await G.takePending();
+    for (const it of (res.items || [])) onLimitSeen(it.accountId, it.text);
+  } catch {}
 }
 
 // ---------- Status turunan satu akun ----------
@@ -525,5 +536,5 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   render();
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); } });
 })();
