@@ -151,3 +151,125 @@ async function doContinue(a) {
   await openClaude();
   toast(`Command disalin. Buka akun "${a.name}" lalu tempel (tahan kolom chat → Tempel).`);
 }
+// ---------- Kartu akun ----------
+function card(a) {
+  const working = a.status === 'working';
+  const ready = working && a.resetAt && Date.parse(a.resetAt) <= Date.now();
+
+  const top = el('div', { class: 'top' },
+    el('input', {
+      class: 'name', value: a.name,
+      onchange: (e) => { a.name = e.target.value.trim() || a.name; commit(); },
+    }),
+    el('button', {
+      class: 'icon', title: 'Hapus akun', text: '✕',
+      onclick: () => {
+        if (confirm(`Hapus akun "${a.name}"?`)) {
+          accounts = accounts.filter((x) => x.id !== a.id);
+          commit();
+        }
+      },
+    }),
+  );
+
+  const badgeText = working
+    ? 'Working'
+    : (a.percent < 100 ? `Free · sisa token ${a.percent}%` : 'Free · token 100%');
+
+  const statusRow = el('div', { class: 'statusrow' },
+    el('span', { class: `badge ${working ? 'working' : 'free'}`, text: badgeText }),
+    el('label', { class: 'switch' },
+      el('input', { type: 'checkbox', checked: working, onchange: (e) => setStatus(a, e.target.checked ? 'working' : 'free') }),
+      el('span', { class: 'slider' }),
+    ),
+  );
+
+  let body;
+  if (working) {
+    body = el('div', { class: 'field' },
+      el('label', { text: 'Token reset pada (jam & tanggal)' }),
+      el('input', {
+        type: 'datetime-local',
+        value: a.resetAt ? toLocalInput(a.resetAt) : '',
+        onchange: (e) => {
+          if (!e.target.value) return;
+          a.resetAt = new Date(e.target.value).toISOString();
+          a.notified = false;
+          commit();
+        },
+      }),
+      el('div', { class: 'row' },
+        el('span', { class: 'resettext', text: 'Cepat atur:' }),
+        ...[1, 2, 3, 5].map((h) => el('button', { type: 'button', class: 'chip', text: `+${h} jam`, onclick: () => setResetIn(a, h) })),
+      ),
+      el('div', { class: `countdown${ready ? ' ready' : ''}`, 'data-reset': a.resetAt || '' }),
+      el('div', { class: 'resettext', text: a.resetAt ? `Reset: ${fmt.format(new Date(a.resetAt))}` : '' }),
+    );
+  } else {
+    body = el('div', { class: 'field' },
+      el('label', { text: 'Sisa token (%), isi jika di bawah 100' }),
+      el('input', {
+        type: 'number', min: '0', max: '100', inputmode: 'numeric', value: String(a.percent),
+        onchange: (e) => {
+          const n = Math.max(0, Math.min(100, parseInt(e.target.value, 10)));
+          a.percent = Number.isNaN(n) ? 100 : n;
+          commit();
+        },
+      }),
+    );
+  }
+
+  const cmdField = el('div', { class: 'field' },
+    el('label', { text: 'Command yang disalin saat Continue' }),
+    el('textarea', {
+      rows: '2', value: a.command || DEFAULT_CMD,
+      onchange: (e) => { a.command = e.target.value; commit(); },
+    }),
+  );
+
+  const btn = el('button', { class: 'continue', text: '▶ Continue', onclick: () => doContinue(a) });
+
+  return el('section', { class: `card ${working ? 'working' : ''}${ready ? ' ready' : ''}` },
+    top, statusRow, body, cmdField, btn);
+}
+
+function render() {
+  document.getElementById('list').replaceChildren(...accounts.map(card));
+  document.getElementById('empty').hidden = accounts.length > 0;
+  const free = accounts.filter((a) => a.status === 'free').length;
+  document.getElementById('summary').textContent =
+    `${accounts.length} akun · ${free} Free · ${accounts.length - free} Working`;
+  tick();
+}
+
+function tick() {
+  document.querySelectorAll('[data-reset]').forEach((node) => {
+    const iso = node.getAttribute('data-reset');
+    if (!iso) { node.textContent = ''; return; }
+    const ms = Date.parse(iso) - Date.now();
+    node.textContent = countdownText(ms);
+    node.classList.toggle('ready', ms <= 0);
+  });
+}
+
+document.getElementById('addForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = document.getElementById('newName');
+  const name = input.value.trim();
+  if (!name) return;
+  accounts.push({
+    id: uid(), name, status: 'free', percent: 100,
+    resetAt: null, notified: false, command: DEFAULT_CMD,
+  });
+  input.value = '';
+  commit();
+});
+
+(async function init() {
+  accounts = await loadAccounts();
+  await initNotifications();
+  render();
+  scheduleAll();
+  setInterval(tick, 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+})();
