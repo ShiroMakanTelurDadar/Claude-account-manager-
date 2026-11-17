@@ -12,6 +12,14 @@ let accounts = [];
 const openIds = new Set();   // akun yang panel detailnya terbuka
 const cards = new Map();     // id akun -> elemen kartu
 
+// Status sesaat dari halaman claude.ai (tidak disimpan ke penyimpanan)
+const BUSY_TTL = 12000;          // ms: busy dianggap berhenti kalau tidak ada heartbeat selama ini
+const RESUME_DELAY = 2500;       // ms: jeda supaya info reset sempat terbaca sebelum browser terbuka
+const RESUME_GUARD = 60000;      // ms: cegah auto-continue ganda untuk akun yang sama
+const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat bekerja
+const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
+const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
+
 const fmt = new Intl.DateTimeFormat('id-ID', {
   weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   hour: '2-digit', minute: '2-digit', hour12: false,
@@ -85,7 +93,7 @@ async function initNotifications() {
   } catch {}
   LN.addListener('localNotificationActionPerformed', (ev) => {
     const a = accounts.find((x) => x.id === (ev.notification.extra || {}).accountId);
-    if (a) { a.notified = true; commit(); doContinue(a); }
+    if (a) { a.notified = true; autoResume(a, 'timer'); }
   });
 }
 
@@ -179,7 +187,7 @@ function toggleOpen(id) {
   if (root) root.classList.toggle('open', openIds.has(id));
 }
 
-function toast(msg) {
+function toast(msg, ms = 4500) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.hidden = false;
@@ -190,7 +198,7 @@ function toast(msg) {
   toast._t = setTimeout(() => {
     t.classList.remove('show');
     toast._h = setTimeout(() => { t.hidden = true; }, 300);
-  }, 4500);
+  }, ms);
 }
 
 async function copyText(text) {
@@ -224,8 +232,8 @@ async function connectAccount(a) {
 // ---------- Deteksi limit dari browser aplikasi ----------
 const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan/i;
 
-// "until 4:00 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu
-function parseResetAt(text) {
+// "until 4:00 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu (dihitung dari saat banner terlihat)
+function parseResetAt(text, ref = Date.now()) {
   const m = /(?:until|hingga|sampai)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
   if (!m) return null;
   let h = parseInt(m[1], 10);
@@ -234,20 +242,26 @@ function parseResetAt(text) {
   if (ap === 'PM' && h < 12) h += 12;
   if (ap === 'AM' && h === 12) h = 0;
   if (h > 23 || min > 59) return null;
-  const d = new Date();
+  const d = new Date(ref);
   d.setHours(h, min, 0, 0);
-  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  if (d.getTime() <= ref) d.setDate(d.getDate() + 1);
   return d;
 }
 
-function onLimitSeen(accountId, text, url) {
+function onLimitSeen(accountId, text, url, evAt) {
   const a = accounts.find((x) => x.id === accountId);
   if (!a || !LIMIT_RE.test(text || '')) return;
+  const ref = evAt || Date.now();
+  // Banner lama (mis. dari antrean): kalau jam resetnya sudah lewat, abaikan
+  const parsed = parseResetAt(text, ref);
+  if (parsed && parsed.getTime() <= Date.now()) return;
+  limitSeenAt.set(a.id, ref);
+  busyAt.delete(a.id);
   // Simpan link chat tempat limit muncul, supaya Continue membuka chat itu
   const chat = /^https:\/\/claude\.ai\/chat\//.test(url || '') ? url : null;
   const chatChanged = !!chat && a.chatUrl !== chat;
   if (chatChanged) a.chatUrl = chat;
-  const at = parseResetAt(text);
+  const at = parsed;
   if (a.status === 'working' && a.resetAt) {
     if (!at || Math.abs(Date.parse(a.resetAt) - at.getTime()) < 60000) {
       if (chatChanged) commit();
@@ -258,23 +272,53 @@ function onLimitSeen(accountId, text, url) {
   a.notified = false;
   a.resetAt = (at || new Date(Date.now() + 5 * 3600e3)).toISOString();
   commit();
-  toast(`Limit terdeteksi di "${a.name}". Status diubah ke Working.`);
+  toast(`Limit terdeteksi di "${a.name}". Status: Working, Pending Project sampai limit reset.`);
+}
+
+// Limit sudah selesai menurut halaman ("You can try again now" / tombol Try again / Continue)
+function onResetSeen(accountId, url, evAt) {
+  const a = accounts.find((x) => x.id === accountId);
+  // Hanya berlaku saat akun sedang pending karena limit. Teks lama di riwayat chat diabaikan.
+  if (!a || a.status !== 'working') return;
+  // Laporan yang lebih tua dari banner limit terakhir sudah usang
+  if ((evAt || Date.now()) < (limitSeenAt.get(a.id) || 0)) return;
+  if (/^https:\/\/claude\.ai\/chat\//.test(url || '')) a.chatUrl = url;
+  autoResume(a, 'page');
+}
+
+// Satu pintu untuk semua laporan dari halaman: limit, busy, reset, idle
+function onPageEvent(ev) {
+  const a = accounts.find((x) => x.id === ev.accountId);
+  if (!a) return;
+  const state = ev.state || 'limit';
+  const at = ev.at || Date.now();
+  if (state === 'busy') {
+    busyAt.set(a.id, Math.max(busyAt.get(a.id) || 0, at));
+    tick();
+  } else if (state === 'idle') {
+    if (at >= (busyAt.get(a.id) || 0)) busyAt.delete(a.id);
+    tick();
+  } else if (state === 'reset') {
+    onResetSeen(a.id, ev.url, at);
+  } else {
+    onLimitSeen(a.id, ev.text, ev.url, at);
+  }
 }
 
 function initLimitWatcher() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.addListener) return;
-  G.addListener('pageText', (ev) => onLimitSeen(ev.accountId, ev.text, ev.url));
+  G.addListener('pageText', onPageEvent);
   drainLimitEvents();
 }
 
-// Ambil banner limit yang tertangkap saat layar utama di belakang browser
+// Ambil laporan halaman yang tertangkap saat layar utama di belakang browser
 async function drainLimitEvents() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.takePending) return;
   try {
     const res = await G.takePending();
-    for (const it of (res.items || [])) onLimitSeen(it.accountId, it.text, it.url);
+    for (const it of (res.items || [])) onPageEvent(it);
   } catch {}
 }
 
@@ -451,30 +495,76 @@ function initTools() {
 // ---------- Status turunan satu akun ----------
 function view(a) {
   const working = a.status === 'working';
-  const list = working ? a.projects : [];
+  const list = a.projects;
   const ms = working && a.resetAt ? Date.parse(a.resetAt) - Date.now() : null;
   const waiting = ms !== null && ms > 0;
   const over = ms !== null && ms <= 0;
-  return { working, list, ms, waiting, over, can: over && list.length > 0 };
+  const busy = Date.now() - (busyAt.get(a.id) || 0) < BUSY_TTL;
+  return { working, list, ms, waiting, over, busy, can: !waiting && list.length > 0 };
 }
 
+// Keterangan di samping tombol Continue. Tiga kondisi:
+//  - limit aktif (pending sampai reset)  -> "Pending Project"
+//  - Claude sedang berpikir / bekerja    -> "There is Project in progress"
+//  - tidak ada apa-apa                   -> "No projects in progress"
 function noteText(v) {
-  if (!v.list.length) return 'No projects in progress';
-  const names = v.list.map((p) => p.name).join(', ');
-  return v.waiting ? `Reset ${countdownShort(v.ms)} · ${names}` : `Siap lanjut · ${names}`;
+  if (v.waiting) return `Pending Project · ${countdownShort(v.ms)}`;
+  if (v.busy) return 'There is Project in progress';
+  if (v.list.length) return `Pending Project · siap lanjut (${v.list.length})`;
+  return 'No projects in progress';
 }
 
+// Akun kembali Free (hitung mundur selesai atau limit sudah reset)
+function freeUp(a) {
+  a.status = 'free';
+  a.resetAt = null;
+  a.percent = 100;
+  a.notified = false;
+}
+
+// Limit sudah reset: jalankan Continue otomatis (tanpa konfirmasi), beri info, lalu status jadi Free.
+// why: 'timer' = hitung mundur selesai, 'page' = chat menampilkan "You can try again now"
+async function autoResume(a, why) {
+  if (a.status !== 'working') return;
+  if (Date.now() - (resumeAt.get(a.id) || 0) < RESUME_GUARD) return;
+  resumeAt.set(a.id, Date.now());
+  busyAt.delete(a.id);
+
+  const p = a.projects.shift();
+  freeUp(a);
+  commit();
+
+  const src = why === 'page' ? 'Chat menampilkan "You can try again now"' : 'Hitung mundur limit selesai';
+  const rest = a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : '';
+  toast(p
+    ? `${src}. Limit "${a.name}" sudah reset. Continue otomatis: "${p.name}". Status: Free.${rest}`
+    : `${src}. Limit "${a.name}" sudah reset. Status: Free.`, 6500);
+  if (!p) return;
+  await new Promise((r) => setTimeout(r, RESUME_DELAY));
+  await openAccount(a, buildCommand(a, p), a.chatUrl);
+}
+
+// Akun yang hitung mundurnya sudah habis -> auto-continue + Free. Hanya saat app terlihat,
+// supaya browser tidak dibuka dari latar belakang. Kalau app tertutup, notifikasi yang memicunya.
+function checkDue() {
+  if (document.hidden) return;
+  const now = Date.now();
+  for (const a of accounts.slice()) {
+    if (a.status === 'working' && a.resetAt && Date.parse(a.resetAt) <= now) autoResume(a, 'timer');
+  }
+}
+
+// Tombol Continue manual (untuk project sisa atau saat auto-continue belum jalan)
 async function doContinue(a) {
   const v = view(a);
   if (!v.can) {
-    toast(!v.working ? 'Akun ini tidak sedang kena limit.'
-      : v.waiting ? `Limit belum reset. Tunggu ${countdownShort(v.ms)}.`
-      : 'Tidak ada project yang terhenti.');
+    toast(v.waiting ? `Limit belum reset. Tunggu ${countdownShort(v.ms)}.` : 'Tidak ada project yang terhenti.');
     return;
   }
   const p = a.projects[0];
   await openAccount(a, buildCommand(a, p), a.chatUrl);
   a.projects.shift();
+  if (a.status === 'working') freeUp(a);
   commit();
   toast(`Command untuk "${p.name}" disalin. Tempel di chat.`
     + (a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : ''));
@@ -611,7 +701,7 @@ function buildCard(a, index) {
       ),
       r.cd, r.full,
     ),
-    el('div', { class: 'field only-working' },
+    el('div', { class: 'field only-working proj' },
       el('label', { text: 'Project terhenti karena limit' }),
       r.plist,
       el('form', {
@@ -656,13 +746,16 @@ function live(root, a) {
   root.classList.toggle('is-working', v.working);
   root.classList.toggle('is-free', !v.working);
   root.classList.toggle('waiting', v.working && v.waiting);
+  root.classList.toggle('busy', v.busy && !v.waiting);
   root.classList.toggle('ready', v.can);
+  root.classList.toggle('has-pj', v.list.length > 0);
   r.go.disabled = !v.can;
   r.note.textContent = noteText(v);
 
   let pt = 'Idle', pc = 'idle';
-  if (v.list.length && v.waiting) { pt = `Paused ${v.list.length}`; pc = 'paused'; }
-  else if (v.list.length && v.over) { pt = `Ready ${v.list.length}`; pc = 'ready'; }
+  if (v.waiting) { pt = v.list.length ? `Paused ${v.list.length}` : 'Paused'; pc = 'paused'; }
+  else if (v.busy) { pt = 'Running'; pc = 'running'; }
+  else if (v.list.length) { pt = `Ready ${v.list.length}`; pc = 'ready'; }
   r.prjV.textContent = pt;
   r.prjV.className = `v ${pc}`;
 
@@ -731,6 +824,7 @@ function tick() {
     const root = cards.get(a.id);
     if (root) live(root, a);
   }
+  checkDue();
 }
 
 document.getElementById('addForm').addEventListener('submit', (e) => {
@@ -755,5 +849,5 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   render();
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); } });
 })();
