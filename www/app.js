@@ -367,11 +367,85 @@ function renderNotes(r, a) {
   if (r._nsig === sig) return;
   r._nsig = sig;
   r.nchips.replaceChildren(...a.notes.map((n) => {
-    const c = el('button', { type: 'button', class: 'nchip', onclick: () => openNoteEditor(a, n) },
+    const c = el('button', {
+      type: 'button', class: 'nchip',
+      onclick: () => { const cur = a.notes.find((x) => x.id === n.id); if (cur) openNoteEditor(a, cur); },
+    },
       el('span', { text: n.name }));
     c.style.setProperty('--nc', n.color);
     return c;
   }));
+}
+
+// ---------- Backup data ----------
+// Ekspor: semua akun, setelan, link chat, dan note jadi satu teks JSON untuk disalin
+function exportData() {
+  const json = JSON.stringify({ v: 1, accounts });
+  const area = el('textarea', { class: 'nedit', readonly: true });
+  area.value = json;
+  area.style.minHeight = '30vh';
+  area.addEventListener('focus', () => area.select());
+  openModal(closeModal,
+    el('div', { class: 'mtitle', text: 'Ekspor data' }),
+    el('div', { class: 'hint2', text: 'Salin teks ini dan simpan di tempat aman (catatan atau chat pribadi). Isinya termasuk link chat dan catatan.' }),
+    area,
+    el('div', { class: 'mact' },
+      el('button', { type: 'button', class: 'btn-g', text: 'Tutup', onclick: closeModal }),
+      el('button', {
+        type: 'button', class: 'btn sm', text: 'Salin',
+        onclick: async () => { await copyText(json); toast('Backup disalin ke clipboard.'); },
+      }),
+    ),
+  );
+}
+
+// Impor: tempel teks backup. Akun dengan id sama diperbarui, yang baru ditambahkan.
+function importData() {
+  const area = el('textarea', { class: 'nedit', placeholder: 'Tempel isi backup di sini...' });
+  area.style.minHeight = '30vh';
+  const run = () => {
+    let data;
+    try { data = JSON.parse(area.value.trim()); } catch { toast('Teks backup tidak valid.'); return; }
+    const list = Array.isArray(data) ? data : (data && data.accounts);
+    if (!Array.isArray(list)) { toast('Tidak ada akun di backup.'); return; }
+    let n = 0;
+    for (const raw of list) {
+      if (!raw || typeof raw !== 'object' || !raw.id || !raw.name) continue;
+      const a = {
+        status: 'free', percent: 100, resetAt: null, notified: false, command: DEFAULT_CMD,
+        projects: [], notes: [], notesOn: false, chatUrl: null, ...raw,
+      };
+      if (!Array.isArray(a.projects)) a.projects = [];
+      if (!Array.isArray(a.notes)) a.notes = [];
+      if (typeof a.percent !== 'number') a.percent = 100;
+      const cur = accounts.find((x) => x.id === a.id);
+      if (cur) Object.assign(cur, a); else accounts.push(a);
+      n++;
+    }
+    if (!n) { toast('Tidak ada akun valid di backup.'); return; }
+    closeModal();
+    commit();
+    toast(`${n} akun dipulihkan.`);
+  };
+  openModal(closeModal,
+    el('div', { class: 'mtitle', text: 'Impor data' }),
+    el('div', { class: 'hint2', text: 'Tempel teks hasil Ekspor data. Akun yang sudah ada diperbarui, akun baru ditambahkan.' }),
+    area,
+    el('div', { class: 'mact' },
+      el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Pulihkan', onclick: run }),
+    ),
+  );
+  area.focus();
+}
+
+function initTools() {
+  const s = document.getElementById('summary');
+  if (!s) return;
+  s.after(el('div', { class: 'tools' },
+    el('button', { type: 'button', class: 'tbtn', text: '⬇ Ekspor data', onclick: exportData }),
+    el('button', { type: 'button', class: 'tbtn', text: '⬆ Impor data', onclick: importData }),
+  ));
 }
 
 // ---------- Status turunan satu akun ----------
@@ -677,6 +751,7 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   accounts = await loadAccounts();
   await initNotifications();
   initLimitWatcher();
+  initTools();
   render();
   scheduleAll();
   setInterval(tick, 1000);
