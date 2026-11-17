@@ -332,3 +332,7 @@ button { cursor: pointer; border: 0; background: none; }
 }
 .tbtn:active { transform: scale(.95); background: rgba(125, 211, 252, .16); }
 #toast { z-index: 30; }
+
+/* Tombol alat: cek akun dan kode Gmail */
+.tbtn:disabled { opacity: .5; }
+.tbtn.ok { color: #86efac; }
