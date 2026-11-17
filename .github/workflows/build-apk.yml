@@ -33,11 +33,11 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Manifest (izin notifikasi + layar GeckoView + pembaca kode email)
+      - name: Manifest (izin notifikasi + layar GeckoView)
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#</manifest>#    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n</manifest>#' "$M"
-          sed -i 's#</application>#    <activity android:name=".MainActivity$GeckoActivity" android:exported="false" android:theme="@style/AppTheme.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" />\n    <service android:name=".MainActivity$MailCodeListener" android:exported="true" android:label="Claude Account Manager" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"><intent-filter><action android:name="android.service.notification.NotificationListenerService" /></intent-filter></service>\n    </application>#' "$M"
+          sed -i 's#</application>#    <activity android:name=".MainActivity$GeckoActivity" android:exported="false" android:theme="@style/AppTheme.NoActionBar" android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout" />\n    <service android:name=".MainActivity$CodeListener" android:exported="true" android:label="Claude Account Manager" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">\n        <intent-filter>\n            <action android:name="android.service.notification.NotificationListenerService" />\n        </intent-filter>\n    </service>\n    </application>#' "$M"
           cat "$M"
 
       - name: Tambahkan GeckoView (arm64 saja, supaya kecil)
