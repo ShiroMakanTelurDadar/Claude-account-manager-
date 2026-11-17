@@ -19,6 +19,13 @@ const RESUME_GUARD = 60000;      // ms: cegah auto-continue ganda untuk akun yan
 const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat bekerja
 const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
+const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
+const CHECK_TIMEOUT = 24000;     // ms: batas waktu cek satu akun di belakang layar
+const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
+let checking = false;            // sedang cek semua akun
+let resumeBusy = false;          // sedang membuka browser untuk auto-continue (satu akun pada satu waktu)
+let checkBtn = null;             // tombol "Cek semua akun"
+let codeBtn = null;              // tombol izin baca kode Gmail
 
 const fmt = new Intl.DateTimeFormat('id-ID', {
   weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -143,6 +150,30 @@ function timeShort(a) {
 // Di baris, email Gmail ditampilkan tanpa @gmail.com supaya muat; nama lengkap ada di panel detail
 const shortName = (n) => n.replace(/@gmail\.com$/i, '');
 
+// Email untuk login otomatis: isian khusus, atau nama akun kalau berbentuk email
+const loginEmail = (a) => (a.email && a.email.includes('@') ? a.email : (a.name.includes('@') ? a.name : ''));
+
+function ago(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return 'baru saja';
+  const m = Math.floor(s / 60);
+  return m < 60 ? `${m}m lalu` : `${Math.floor(m / 60)}j lalu`;
+}
+
+const CHECK_LABEL = {
+  limit: 'limit aktif', busy: 'sedang bekerja', reset: 'limit sudah selesai',
+  idle: 'tidak ada project berjalan', loggedout: 'belum login', unknown: 'tidak terbaca',
+};
+
+// Catat status terakhir yang terlihat di halaman akun (dari browser maupun dari cek latar belakang).
+// Laporan yang lebih tua dari yang tercatat diabaikan.
+function noteCheck(a, state, at) {
+  const c = a.check;
+  if (c && at < c.at) return;
+  if (!c || c.state !== state) { a.check = { state, at }; saveAccounts(); }
+  else c.at = at;   // tanpa simpan, supaya heartbeat busy tidak menulis terus
+}
+
 // ---------- Aksi ----------
 function commit() {
   saveAccounts();
@@ -223,6 +254,7 @@ async function openAccount(a, text, url) {
 
 // Buka chat akun ini (kalau link sudah diisi) atau halaman login claude.ai di browser aplikasi
 async function connectAccount(a) {
+  if (checking) { toast('Tunggu pengecekan akun selesai dulu.'); return; }
   await openAccount(a, '', a.chatUrl || LOGIN_URL);
   toast(a.chatUrl
     ? `Membuka chat akun "${a.name}".`
@@ -275,6 +307,13 @@ function onLimitSeen(accountId, text, url, evAt) {
   toast(`Limit terdeteksi di "${a.name}". Status: Working, Pending Project sampai limit reset.`);
 }
 
+// Tandai limit sudah selesai sekarang. checkDue yang menjalankan auto-continue, satu akun pada satu waktu.
+function markLimitOver(a, why) {
+  resumeWhy.set(a.id, why);
+  a.resetAt = new Date().toISOString();
+  commit();
+}
+
 // Limit sudah selesai menurut halaman ("You can try again now" / tombol Try again / Continue)
 function onResetSeen(accountId, url, evAt) {
   const a = accounts.find((x) => x.id === accountId);
@@ -283,21 +322,25 @@ function onResetSeen(accountId, url, evAt) {
   // Laporan yang lebih tua dari banner limit terakhir sudah usang
   if ((evAt || Date.now()) < (limitSeenAt.get(a.id) || 0)) return;
   if (/^https:\/\/claude\.ai\/chat\//.test(url || '')) a.chatUrl = url;
-  autoResume(a, 'page');
+  markLimitOver(a, 'page');
 }
 
-// Satu pintu untuk semua laporan dari halaman: limit, busy, reset, idle
+// Satu pintu untuk semua laporan dari halaman: limit, busy, reset, idle, loggedout
 function onPageEvent(ev) {
   const a = accounts.find((x) => x.id === ev.accountId);
   if (!a) return;
   const state = ev.state || 'limit';
   const at = ev.at || Date.now();
+  noteCheck(a, state, at);
   if (state === 'busy') {
     busyAt.set(a.id, Math.max(busyAt.get(a.id) || 0, at));
     tick();
   } else if (state === 'idle') {
     if (at >= (busyAt.get(a.id) || 0)) busyAt.delete(a.id);
     tick();
+  } else if (state === 'loggedout') {
+    busyAt.delete(a.id);
+    render();
   } else if (state === 'reset') {
     onResetSeen(a.id, ev.url, at);
   } else {
@@ -486,10 +529,15 @@ function importData() {
 function initTools() {
   const s = document.getElementById('summary');
   if (!s) return;
+  checkBtn = el('button', { type: 'button', class: 'tbtn', text: '⟳ Cek semua akun', onclick: checkAll });
+  codeBtn = el('button', { type: 'button', class: 'tbtn', text: '🔑 Kode Gmail', onclick: onCodeBtn });
   s.after(el('div', { class: 'tools' },
+    checkBtn,
+    codeBtn,
     el('button', { type: 'button', class: 'tbtn', text: '⬇ Ekspor data', onclick: exportData }),
     el('button', { type: 'button', class: 'tbtn', text: '⬆ Impor data', onclick: importData }),
   ));
+  refreshCodeBtn();
 }
 
 // ---------- Status turunan satu akun ----------
@@ -499,17 +547,29 @@ function view(a) {
   const ms = working && a.resetAt ? Date.parse(a.resetAt) - Date.now() : null;
   const waiting = ms !== null && ms > 0;
   const over = ms !== null && ms <= 0;
-  const busy = Date.now() - (busyAt.get(a.id) || 0) < BUSY_TTL;
-  return { working, list, ms, waiting, over, busy, can: !waiting && list.length > 0 };
+  const now = Date.now();
+  const live = now - (busyAt.get(a.id) || 0) < BUSY_TTL;
+  const c = a.check;
+  const checkBusy = !!c && c.state === 'busy' && now - c.at < CHECK_BUSY_TTL;
+  const loggedOut = !!c && c.state === 'loggedout';
+  return {
+    working, list, ms, waiting, over, loggedOut,
+    busy: live || checkBusy,
+    busyFromCheck: !live && checkBusy,
+    checkAge: c ? now - c.at : 0,
+    can: !waiting && list.length > 0,
+  };
 }
 
-// Keterangan di samping tombol Continue. Tiga kondisi:
+// Keterangan di samping tombol Continue. Kondisi:
+//  - belum login                         -> "Belum login"
 //  - limit aktif (pending sampai reset)  -> "Pending Project"
 //  - Claude sedang berpikir / bekerja    -> "There is Project in progress"
 //  - tidak ada apa-apa                   -> "No projects in progress"
 function noteText(v) {
+  if (v.loggedOut) return 'Belum login · tekan 🔗';
   if (v.waiting) return `Pending Project · ${countdownShort(v.ms)}`;
-  if (v.busy) return 'There is Project in progress';
+  if (v.busy) return 'There is Project in progress' + (v.busyFromCheck ? ` · cek ${ago(v.checkAge)}` : '');
   if (v.list.length) return `Pending Project · siap lanjut (${v.list.length})`;
   return 'No projects in progress';
 }
@@ -526,36 +586,126 @@ function freeUp(a) {
 // why: 'timer' = hitung mundur selesai, 'page' = chat menampilkan "You can try again now"
 async function autoResume(a, why) {
   if (a.status !== 'working') return;
+  // Satu browser dibuka pada satu waktu. Akun lain menunggu giliran (dicoba lagi di tick berikutnya).
+  if (resumeBusy || checking) return;
   if (Date.now() - (resumeAt.get(a.id) || 0) < RESUME_GUARD) return;
-  resumeAt.set(a.id, Date.now());
-  busyAt.delete(a.id);
+  resumeBusy = true;
+  try {
+    resumeAt.set(a.id, Date.now());
+    busyAt.delete(a.id);
+    const reason = resumeWhy.get(a.id) || why;
+    resumeWhy.delete(a.id);
 
-  const p = a.projects.shift();
-  freeUp(a);
-  commit();
+    const p = a.projects.shift();
+    freeUp(a);
+    commit();
 
-  const src = why === 'page' ? 'Chat menampilkan "You can try again now"' : 'Hitung mundur limit selesai';
-  const rest = a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : '';
-  toast(p
-    ? `${src}. Limit "${a.name}" sudah reset. Continue otomatis: "${p.name}". Status: Free.${rest}`
-    : `${src}. Limit "${a.name}" sudah reset. Status: Free.`, 6500);
-  if (!p) return;
-  await new Promise((r) => setTimeout(r, RESUME_DELAY));
-  await openAccount(a, buildCommand(a, p), a.chatUrl);
+    const src = reason === 'page' ? 'Chat menampilkan "You can try again now"'
+      : reason === 'check' ? 'Cek akun: limit sudah tidak aktif'
+      : 'Hitung mundur limit selesai';
+    const rest = a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : '';
+    toast(p
+      ? `${src}. Limit "${a.name}" sudah reset. Continue otomatis: "${p.name}". Status: Free.${rest}`
+      : `${src}. Limit "${a.name}" sudah reset. Status: Free.`, 6500);
+    if (!p) return;
+    await new Promise((r) => setTimeout(r, RESUME_DELAY));
+    await openAccount(a, buildCommand(a, p), a.chatUrl);
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    resumeBusy = false;
+  }
 }
 
 // Akun yang hitung mundurnya sudah habis -> auto-continue + Free. Hanya saat app terlihat,
 // supaya browser tidak dibuka dari latar belakang. Kalau app tertutup, notifikasi yang memicunya.
 function checkDue() {
-  if (document.hidden) return;
+  if (document.hidden || resumeBusy || checking) return;
   const now = Date.now();
   for (const a of accounts.slice()) {
-    if (a.status === 'working' && a.resetAt && Date.parse(a.resetAt) <= now) autoResume(a, 'timer');
+    if (a.status === 'working' && a.resetAt && Date.parse(a.resetAt) <= now) {
+      autoResume(a, 'timer');
+      break;   // satu akun per pengecekan
+    }
   }
+}
+
+// ---------- Cek akun di belakang layar ----------
+// Hasil satu cek: {state, text, url}. state: limit, busy, reset, idle, loggedout, unknown
+function applyCheck(a, res) {
+  const at = Date.now();
+  const state = res.state || 'unknown';
+  a.check = { state, at };
+  if (state === 'busy') busyAt.set(a.id, at); else busyAt.delete(a.id);
+  if (/^https:\/\/claude\.ai\/chat\//.test(res.url || '') && !a.chatUrl) a.chatUrl = res.url;
+
+  if (state === 'limit') {
+    onLimitSeen(a.id, res.text, res.url, at);          // set Working + jam reset dari banner
+  } else if (state === 'reset') {
+    if (a.status === 'working') markLimitOver(a, 'page');
+  } else if (state === 'idle' && a.status === 'working' && a.resetAt && Date.parse(a.resetAt) > at) {
+    // Chat terbuka normal tanpa banner limit: limit sudah tidak aktif
+    markLimitOver(a, 'check');
+  }
+  commit();
+}
+
+function setCheckBtn(text) {
+  if (!checkBtn) return;
+  checkBtn.textContent = text || '⟳ Cek semua akun';
+  checkBtn.disabled = !!text;
+}
+
+async function checkAll() {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.check) { toast('Cek akun hanya jalan di aplikasi Android.'); return; }
+  if (checking) return;
+  if (!accounts.length) { toast('Belum ada akun.'); return; }
+  checking = true;
+  const list = accounts.slice();
+  const tally = {};
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i];
+      if (!accounts.includes(a)) continue;
+      setCheckBtn(`Cek ${i + 1}/${list.length}...`);
+      let res;
+      try {
+        res = await G.check({ accountId: a.id, url: a.chatUrl || CLAUDE_URL, timeoutMs: CHECK_TIMEOUT });
+      } catch (e) { res = { state: 'unknown' }; }
+      applyCheck(a, res);
+      const label = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
+      tally[label] = (tally[label] || 0) + 1;
+    }
+  } finally {
+    checking = false;
+    setCheckBtn(null);
+  }
+  toast('Cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6000);
+}
+
+// Izin baca notifikasi Gmail (untuk kode login otomatis)
+async function refreshCodeBtn() {
+  const G = P.GeckoBrowser;
+  if (!codeBtn || !native || !G || !G.codeAccess) return;
+  try {
+    const r = await G.codeAccess();
+    codeBtn.textContent = r.enabled ? '✅ Kode Gmail aktif' : '🔑 Aktifkan kode Gmail';
+    codeBtn.classList.toggle('ok', !!r.enabled);
+    codeBtn._on = !!r.enabled;
+  } catch {}
+}
+
+async function onCodeBtn() {
+  const G = P.GeckoBrowser;
+  if (!native || !G) return;
+  if (codeBtn._on) { toast('Kode login dibaca otomatis dari notifikasi Gmail.'); return; }
+  toast('Aktifkan "Claude Account Manager" di daftar Akses notifikasi.');
+  try { await G.openCodeAccess(); } catch {}
 }
 
 // Tombol Continue manual (untuk project sisa atau saat auto-continue belum jalan)
 async function doContinue(a) {
+  if (checking) { toast('Tunggu pengecekan akun selesai dulu.'); return; }
   const v = view(a);
   if (!v.can) {
     toast(v.waiting ? `Limit belum reset. Tunggu ${countdownShort(v.ms)}.` : 'Tidak ada project yang terhenti.');
@@ -676,6 +826,20 @@ function buildCard(a, index) {
       commit();
     },
   });
+  r.email = el('input', {
+    type: 'email', inputmode: 'email', placeholder: 'email@gmail.com', autocomplete: 'off',
+    onchange: (e) => {
+      const v = e.target.value.trim();
+      if (v && !v.includes('@')) {
+        toast('Email tidak valid.');
+        e.target.value = a.email || '';
+        return;
+      }
+      a.email = v || null;
+      commit();
+    },
+  });
+  r.chk = el('div', { class: 'hint2' });
   r.notesChk = el('input', {
     type: 'checkbox',
     onchange: (e) => { a.notesOn = e.target.checked; commit(); },
@@ -687,6 +851,11 @@ function buildCard(a, index) {
     el('div', { class: 'field' },
       el('label', { text: 'Link chat akun ini (dibuka oleh 🔗 dan Continue)' }),
       r.chat,
+    ),
+    el('div', { class: 'field' },
+      el('label', { text: 'Email login otomatis (kosongkan jika nama akun sudah berupa email)' }),
+      r.email,
+      r.chk,
     ),
     el('div', { class: 'field' },
       el('label', { class: 'chk' }, r.notesChk, el('span', { text: 'Pasang note di akun ini' })),
@@ -780,6 +949,10 @@ function refresh(root, a) {
   setVal(r.when, a.resetAt ? toLocalInput(a.resetAt) : '');
   setVal(r.cmd, cmdTemplate(a));
   setVal(r.chat, a.chatUrl || '');
+  setVal(r.email, a.email || '');
+  r.chk.textContent = a.check
+    ? `Dicek ${new Date(a.check.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${CHECK_LABEL[a.check.state] || CHECK_LABEL.unknown}`
+    : 'Belum pernah dicek. Tekan "Cek semua akun".';
   r.notesChk.checked = !!a.notesOn;
   r.full.textContent = a.resetAt ? `Reset: ${fmt.format(new Date(a.resetAt))}` : '';
   renderProjects(r, a);
@@ -849,5 +1022,5 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   render();
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); refreshCodeBtn(); } });
 })();
