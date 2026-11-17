@@ -1,6 +1,7 @@
 const OLD_CMD = 'Lanjutkan task sebelumnya dari bagian terakhir yang belum selesai.';
 const DEFAULT_CMD = 'Lanjutkan project "{project}" dari bagian terakhir yang belum selesai.';
 const CLAUDE_URL = 'https://claude.ai/new';
+const LOGIN_URL = 'https://claude.ai/login';
 const STORE_KEY = 'accounts';
 
 const Cap = window.Capacitor || {};
@@ -198,17 +199,23 @@ async function copyText(text) {
   } catch {}
 }
 
-async function openClaude() {
+async function openClaude(url = CLAUDE_URL) {
   try {
-    if (native && P.AppLauncher) await P.AppLauncher.openUrl({ url: CLAUDE_URL });
-    else window.open(CLAUDE_URL, '_blank');
-  } catch { window.open(CLAUDE_URL, '_blank'); }
+    if (native && P.AppLauncher) await P.AppLauncher.openUrl({ url });
+    else window.open(url, '_blank');
+  } catch { window.open(url, '_blank'); }
 }
 
-// gecko.js menimpa fungsi ini supaya Continue membuka browser GeckoView per akun
-async function openAccount(a, text) {
-  await copyText(text);
-  await openClaude();
+// gecko.js menimpa fungsi ini supaya Continue dan Connect membuka browser GeckoView per akun
+async function openAccount(a, text, url) {
+  if (text) await copyText(text);
+  await openClaude(url);
+}
+
+// Buka halaman login claude.ai di browser aplikasi, khusus untuk akun ini
+async function connectAccount(a) {
+  await openAccount(a, '', LOGIN_URL);
+  toast(`Login ke akun "${a.name}" di browser ini. Login tersimpan terpisah untuk akun ini.`);
 }
 
 // ---------- Status turunan satu akun ----------
@@ -276,7 +283,12 @@ function buildCard(a, index) {
     el('span', { text: 'Continue' }), el('span', { class: 'arr', text: '→' }));
   r.note = el('span', { class: 'note' });
   const chev = el('button', { type: 'button', class: 'chev', 'aria-label': 'Detail akun', onclick: () => toggleOpen(a.id) });
-  const r2 = el('div', { class: 'r2' }, r.go, r.note, chev);
+  const link = el('button', {
+    type: 'button', class: 'link', text: '🔗',
+    title: 'Hubungkan akun ke browser aplikasi', 'aria-label': 'Hubungkan akun',
+    onclick: () => connectAccount(a),
+  });
+  const r2 = el('div', { class: 'r2' }, r.go, r.note, link, chev);
 
   // Panel detail
   r.name = el('input', {
@@ -324,6 +336,7 @@ function buildCard(a, index) {
   });
 
   const detail = el('div', { class: 'dwrap' }, el('div', { class: 'dinner' }, el('div', { class: 'dpad' },
+    el('button', { type: 'button', class: 'connect', text: '🔗 Hubungkan akun ke browser aplikasi', onclick: () => connectAccount(a) }),
     el('div', { class: 'drow' }, r.name, del),
     el('div', { class: 'field only-free' }, el('label', { text: 'Sisa token (%)' }), r.pct),
     el('div', { class: 'field only-working' },
