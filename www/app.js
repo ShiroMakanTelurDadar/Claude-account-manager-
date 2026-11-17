@@ -218,6 +218,45 @@ async function connectAccount(a) {
   toast(`Login ke akun "${a.name}" di browser ini. Login tersimpan terpisah untuk akun ini.`);
 }
 
+// ---------- Deteksi limit dari browser aplikasi ----------
+const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan/i;
+
+// "until 4:00 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu
+function parseResetAt(text) {
+  const m = /(?:until|hingga|sampai)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = (m[3] || '').toUpperCase();
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  if (h > 23 || min > 59) return null;
+  const d = new Date();
+  d.setHours(h, min, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  return d;
+}
+
+function onLimitSeen(accountId, text) {
+  const a = accounts.find((x) => x.id === accountId);
+  if (!a || !LIMIT_RE.test(text || '')) return;
+  const at = parseResetAt(text);
+  if (a.status === 'working' && a.resetAt) {
+    if (!at || Math.abs(Date.parse(a.resetAt) - at.getTime()) < 60000) return;
+  }
+  a.status = 'working';
+  a.notified = false;
+  a.resetAt = (at || new Date(Date.now() + 5 * 3600e3)).toISOString();
+  commit();
+  toast(`Limit terdeteksi di "${a.name}". Status diubah ke Working.`);
+}
+
+function initLimitWatcher() {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.addListener) return;
+  G.addListener('pageText', (ev) => onLimitSeen(ev.accountId, ev.text));
+}
+
 // ---------- Status turunan satu akun ----------
 function view(a) {
   const working = a.status === 'working';
@@ -482,6 +521,7 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
 (async function init() {
   accounts = await loadAccounts();
   await initNotifications();
+  initLimitWatcher();
   render();
   scheduleAll();
   setInterval(tick, 1000);
