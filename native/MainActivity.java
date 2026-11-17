@@ -174,11 +174,9 @@ public class MainActivity extends BridgeActivity {
                                     sExtReady = true;
                                 }
                                 if (session != null) session.loadUri(url);
-                                return null;
                             },
                             err -> {
                                 if (session != null) session.loadUri(url);
-                                return null;
                             });
         }
 
