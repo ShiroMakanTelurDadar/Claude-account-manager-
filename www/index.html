@@ -3,19 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#14161a">
+  <meta name="theme-color" content="#04070c">
   <title>Claude Account Manager</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div class="bg" aria-hidden="true"></div>
+
   <header>
-    <h1>Claude Account Manager</h1>
+    <h1>Account Manager</h1>
     <div id="summary"></div>
   </header>
 
   <form id="addForm">
-    <input id="newName" placeholder="Nama akun (mis. Akun Utama)" required>
-    <button type="submit">+ Tambah</button>
+    <input id="newName" placeholder="Tambah akun (mis. email)" required autocomplete="off">
+    <button type="submit" class="btn">+ Tambah</button>
   </form>
 
   <main id="list"></main>
