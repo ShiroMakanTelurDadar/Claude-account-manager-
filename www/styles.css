@@ -152,6 +152,7 @@ button { cursor: pointer; border: 0; background: none; }
 .prj .v.idle { color: var(--muted); }
 .prj .v.paused { color: var(--amber); }
 .prj .v.ready { color: var(--cyan); text-shadow: 0 0 12px rgba(34, 211, 238, .6); }
+.prj .v.running { color: #86efac; text-shadow: 0 0 12px rgba(134, 239, 172, .5); }
 
 /* Baris 2: continue + keterangan */
 .r2 {
@@ -182,6 +183,9 @@ button { cursor: pointer; border: 0; background: none; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .acc.ready .note { color: var(--sky); }
+.acc.waiting .note { color: var(--amber); }
+.acc.busy .note { color: #86efac; }
+.acc.busy { border-color: rgba(134, 239, 172, .35); }
 
 .chev { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; transition: background .2s; }
 .chev:active { background: rgba(125, 211, 252, .12); }
@@ -211,6 +215,8 @@ button { cursor: pointer; border: 0; background: none; }
 .field { display: flex; flex-direction: column; gap: 7px; }
 .field label { color: var(--muted); font-size: 12px; }
 .is-free .only-working, .is-working .only-free { display: none; }
+/* Project sisa tetap bisa dilihat dan dihapus walau akun sudah Free */
+.is-free.has-pj .only-working.proj { display: flex; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .chip {
