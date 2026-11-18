@@ -1,0 +1,223 @@
+# Claude Account Manager
+
+Android app to manage several Claude accounts, track usage limits, and continue stopped projects with one tap.
+Aplikasi Android untuk mengelola beberapa akun Claude, memantau limit pemakaian, dan melanjutkan project yang terhenti dengan satu ketukan.
+
+- [English](#english)
+- [Bahasa Indonesia](#bahasa-indonesia)
+
+---
+
+## English
+
+### What it does
+
+Claude Account Manager keeps a list of your Claude accounts. Each account opens in its own browser session inside the app (Firefox engine, GeckoView), so every account has a separate login. A small extension reads the claude.ai page and reports what it sees to the app.
+
+Main features:
+
+- **Separate login per account.** Cookies are not shared between accounts.
+- **Free / Limit status.** Switch an account to Limit when it hits the usage limit. The app also switches it automatically when it detects the limit.
+- **Limit detection.** The app detects the banner "You are out of free messages until 12:30 PM" and the popup "Upgrade to keep chatting ... It resets at 2:50 PM". The reset time is read from the text.
+- **Manual reset time.** If the time read by the app is wrong, tap the Reset column of the account and set your own time (date and time, or +1, +2, +3, +5 hours). A manual time is kept until the limit ends or you choose "Use automatic".
+- **Pending projects.** Add the names of projects that were stopped by the limit. Each one becomes a Continue command.
+- **Continue button.** When a "Continue" or "Try again" button is visible in the Claude chat, the account turns green and the Continue button becomes active. Tapping it opens the chat and presses that button. If the button is not there, the app types the command into the chat and sends it.
+- **Automatic continue.** When the limit time ends, the app continues the next pending project by itself (only while the app is open).
+- **Check accounts.** The "Cek semua akun" button checks every account in the background. The ⟳ button on an account checks only that account.
+- **Automatic check.** Choose Off, 30 minutes, 1 hour, 2 hours, or 5 hours. The default is 1 hour.
+- **Browser buttons.** Inside the account browser there is a home button (back to the app) and a faded refresh button. The refresh button can be dragged anywhere and becomes clear while you touch it.
+- **Notes.** Optional colored notes for each account.
+- **Backup.** Export all accounts as text and import them back.
+- **Notification.** A system notification is scheduled for the reset time, even when the app is closed.
+
+### Limits you should know about
+
+- **Email login needs one manual step.** The app fills in the email address, but the login link sent by Claude must be opened by you. The app cannot press a button inside an email. The old "read the code from Gmail" feature was removed for this reason.
+- **Automatic check only runs while the app is open.** If the schedule passes while the app is closed, the check runs as soon as you open the app again.
+- **Page text can change.** The detection depends on the wording of claude.ai. If Claude changes its wording, update the patterns at the top of `www/limitwatch/content.js`.
+- **The Continue / Try again detection is broad.** Any visible button with exactly that text turns the account green, even when there is no limit.
+- **Android arm64 only.** The build includes GeckoView for arm64 devices to keep the APK small.
+
+### How to use
+
+1. **Add an account.** Type a name (an email address works best) and tap "+ Tambah".
+2. **Connect the account.** Tap the 🔗 button. The in-app browser opens claude.ai. Fill in the email in the account detail panel first if the account name is not an email. Log in. The login stays saved for that account only.
+3. **Mark a limit.** When an account hits the limit, the app usually detects it and switches the account to Limit with the reset time. You can also turn the switch yourself. The time shown in the Reset column is the time the limit ends.
+4. **Fix the reset time if needed.** Tap the Reset column, pick the correct time, and save.
+5. **Add pending projects.** Open the account detail (tap the account name or the arrow) and add the project names that were stopped.
+6. **Continue.** When the Continue button is active (blue when ready, green when Continue / Try again was seen in the chat), tap it. The browser opens the chat and continues.
+7. **Check accounts.** Use "Cek semua akun" or the ⟳ on one account. Close the in-app browser first, because a check cannot run while it is open.
+8. **Set the automatic check.** Use the "Auto cek" menu at the top.
+
+Status labels on each row:
+
+| Label | Meaning |
+| --- | --- |
+| Free | No limit active |
+| Limit | Limit active, waiting for the reset time |
+| Paused | Limit active and projects are waiting |
+| Running | Claude is working in the chat |
+| Ready | The limit ended and projects are ready to continue |
+| Resume | A Continue / Try again button was seen in the chat |
+
+### Build the APK (GitHub Actions)
+
+The APK is built by `.github/workflows/build-apk.yml`. It runs on every push to `main` or `master`, or by hand from the Actions tab (Run workflow).
+
+One-time setup: the build needs a fixed debug signing key so every build has the same signature and can be installed over the old one.
+
+1. Create the key on a computer with Java:
+
+   ```
+   keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+   ```
+
+2. Convert it to one line of text:
+
+   ```
+   base64 -w0 debug.keystore
+   ```
+
+3. In GitHub open Settings, Secrets and variables, Actions, and create a secret named `DEBUG_KEYSTORE_BASE64` with that text.
+4. Run the workflow. When it finishes, download the artifact `ClaudeAccountManager-apk` (kept for 3 days), unzip it, and install `app-debug.apk`.
+
+Keep `debug.keystore` safe. If you lose it, the next build has a different signature and you must uninstall the old app first, which removes its data. Export your data before that.
+
+### Project structure
+
+```
+.github/workflows/build-apk.yml   Build script for the APK
+capacitor.config.json             App name and id
+package.json                      Capacitor dependencies
+native/MainActivity.java          Android code: browser screen, checks, floating buttons
+www/index.html                    Page shell
+www/app.js                        App logic and screen
+www/gecko.js                      Makes Continue and Connect use the in-app browser
+www/styles.css                    Styles
+www/limitwatch/manifest.json      Browser extension manifest
+www/limitwatch/content.js         Reads the claude.ai page, fills email, presses Continue
+www/limitwatch/background.js      Passes messages between the page and the app
+```
+
+### Customizing
+
+- **Detection wording:** the patterns at the top of `www/limitwatch/content.js` (`LIMIT_RE`, `POPUP_RE`, `RESET_RE`, `RESUME_BTN_RE`).
+- **Reset time parsing:** `parseResetAt` in `www/app.js`.
+- **Automatic check choices:** `AUTO_OPTS` in `www/app.js`.
+- **Default command:** `DEFAULT_CMD` in `www/app.js`. Use `{project}` for the project name. Each account can also have its own command in its detail panel.
+
+### Troubleshooting
+
+- **The build fails with "Secret DEBUG_KEYSTORE_BASE64 belum diisi":** create the secret as described above.
+- **"Tutup browser aplikasi dulu, lalu cek lagi":** close the in-app browser, then run the check again.
+- **A limit is not detected:** open the account in the browser and check the exact wording on the page, then adjust the patterns in `content.js`. As a fallback, switch the account to Limit yourself and set the time manually.
+- **The command is typed but not sent:** the send button label may have changed. Update `SEND_SEL` in `content.js`. The command is also copied to the clipboard, so you can paste it.
+- **Login email is not filled in:** set the email in the account detail panel, or use an email address as the account name.
+
+---
+
+## Bahasa Indonesia
+
+### Fungsi aplikasi
+
+Claude Account Manager menyimpan daftar akun Claude kamu. Tiap akun dibuka di sesi browser sendiri di dalam aplikasi (mesin Firefox, GeckoView), jadi setiap akun punya login terpisah. Ekstensi kecil membaca halaman claude.ai dan melaporkannya ke aplikasi.
+
+Fitur utama:
+
+- **Login terpisah per akun.** Cookie tidak dibagi antar akun.
+- **Status Free / Limit.** Ubah akun ke Limit saat kena limit pemakaian. Aplikasi juga mengubahnya otomatis kalau mendeteksi limit.
+- **Deteksi limit.** Aplikasi mendeteksi banner "You are out of free messages until 12:30 PM" dan popup "Upgrade to keep chatting ... It resets at 2:50 PM". Jam reset dibaca dari teks itu.
+- **Waktu reset manual.** Kalau jam yang terbaca aplikasi salah, ketuk kolom Reset di baris akun lalu atur waktu sendiri (tanggal dan jam, atau +1, +2, +3, +5 jam). Waktu manual dipertahankan sampai limit selesai atau kamu pilih "Pakai otomatis".
+- **Project tertunda.** Tambahkan nama project yang terhenti karena limit. Tiap project menjadi satu command Continue.
+- **Tombol Continue.** Saat tombol "Continue" atau "Try again" terlihat di chat Claude, akun berubah hijau dan tombol Continue aktif. Kalau ditekan, aplikasi membuka chat lalu menekan tombol itu. Kalau tombolnya tidak ada, aplikasi mengetik command ke chat dan mengirimnya.
+- **Continue otomatis.** Saat waktu limit selesai, aplikasi melanjutkan project tertunda berikutnya sendiri (hanya saat aplikasi terbuka).
+- **Cek akun.** Tombol "Cek semua akun" mengecek semua akun di belakang layar. Tombol ⟳ di sebuah akun hanya mengecek akun itu.
+- **Cek otomatis.** Pilih Mati, 30 menit, 1 jam, 2 jam, atau 5 jam. Bawaannya 1 jam.
+- **Tombol di browser.** Di dalam browser akun ada tombol home (kembali ke aplikasi) dan tombol refresh yang pudar. Tombol refresh bisa digeser ke mana saja dan jadi jelas saat disentuh.
+- **Note.** Catatan berwarna per akun (opsional).
+- **Backup.** Ekspor semua akun sebagai teks dan impor kembali.
+- **Notifikasi.** Notifikasi sistem dijadwalkan di jam reset, walau aplikasi tertutup.
+
+### Batasan yang perlu diketahui
+
+- **Login lewat email butuh satu langkah manual.** Aplikasi mengisi alamat email, tetapi link login dari Claude harus kamu buka sendiri. Aplikasi tidak bisa menekan tombol di dalam email. Fitur lama "baca kode dari Gmail" dihapus karena alasan ini.
+- **Cek otomatis hanya jalan saat aplikasi terbuka.** Kalau jadwal terlewat saat aplikasi tertutup, pengecekan langsung jalan begitu aplikasi dibuka lagi.
+- **Teks halaman bisa berubah.** Deteksi bergantung pada kata-kata di claude.ai. Kalau Claude mengubah kalimatnya, perbarui pola di bagian atas `www/limitwatch/content.js`.
+- **Deteksi Continue / Try again cukup luas.** Tombol apa pun yang terlihat dengan teks persis itu membuat akun hijau, walau tidak ada limit.
+- **Hanya Android arm64.** Build memakai GeckoView untuk perangkat arm64 supaya ukuran APK kecil.
+
+### Cara pakai
+
+1. **Tambah akun.** Ketik nama (alamat email paling pas) lalu ketuk "+ Tambah".
+2. **Hubungkan akun.** Ketuk tombol 🔗. Browser aplikasi membuka claude.ai. Isi dulu email di panel detail akun kalau nama akun bukan email. Lalu login. Login hanya tersimpan untuk akun itu.
+3. **Tandai limit.** Saat akun kena limit, aplikasi biasanya mendeteksinya dan mengubah akun ke Limit beserta jam reset. Kamu juga bisa menggeser saklarnya sendiri. Jam di kolom Reset adalah waktu limit berakhir.
+4. **Perbaiki jam reset kalau salah.** Ketuk kolom Reset, pilih waktu yang benar, lalu simpan.
+5. **Tambah project tertunda.** Buka detail akun (ketuk nama akun atau panahnya) lalu tambahkan nama project yang terhenti.
+6. **Continue.** Saat tombol Continue aktif (biru kalau siap, hijau kalau Continue / Try again terlihat di chat), ketuk. Browser membuka chat dan melanjutkan.
+7. **Cek akun.** Pakai "Cek semua akun" atau ⟳ di satu akun. Tutup dulu browser aplikasi, karena pengecekan tidak bisa jalan saat browser terbuka.
+8. **Atur cek otomatis.** Pakai menu "Auto cek" di bagian atas.
+
+Arti label di tiap baris:
+
+| Label | Arti |
+| --- | --- |
+| Free | Tidak ada limit |
+| Limit | Limit aktif, menunggu jam reset |
+| Paused | Limit aktif dan ada project menunggu |
+| Running | Claude sedang bekerja di chat |
+| Ready | Limit selesai dan project siap dilanjutkan |
+| Resume | Tombol Continue / Try again terlihat di chat |
+
+### Build APK (GitHub Actions)
+
+APK dibuat oleh `.github/workflows/build-apk.yml`. Workflow jalan tiap push ke `main` atau `master`, atau manual dari tab Actions (Run workflow).
+
+Persiapan sekali saja: build butuh kunci debug yang tetap supaya semua build punya tanda tangan yang sama dan bisa dipasang menimpa versi lama.
+
+1. Buat kunci di komputer yang punya Java:
+
+   ```
+   keytool -genkeypair -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+   ```
+
+2. Ubah jadi satu baris teks:
+
+   ```
+   base64 -w0 debug.keystore
+   ```
+
+3. Di GitHub buka Settings, Secrets and variables, Actions, lalu buat secret bernama `DEBUG_KEYSTORE_BASE64` berisi teks itu.
+4. Jalankan workflow. Setelah selesai, unduh artifact `ClaudeAccountManager-apk` (disimpan 3 hari), ekstrak, lalu pasang `app-debug.apk`.
+
+Simpan `debug.keystore` dengan aman. Kalau hilang, build berikutnya punya tanda tangan berbeda dan aplikasi lama harus dihapus dulu, sehingga datanya ikut hilang. Ekspor data sebelum itu.
+
+### Struktur project
+
+```
+.github/workflows/build-apk.yml   Skrip build APK
+capacitor.config.json             Nama dan id aplikasi
+package.json                      Dependensi Capacitor
+native/MainActivity.java          Kode Android: layar browser, pengecekan, tombol melayang
+www/index.html                    Kerangka halaman
+www/app.js                        Logika dan tampilan aplikasi
+www/gecko.js                      Membuat Continue dan Connect memakai browser aplikasi
+www/styles.css                    Gaya tampilan
+www/limitwatch/manifest.json      Manifest ekstensi browser
+www/limitwatch/content.js         Membaca halaman claude.ai, isi email, menekan Continue
+www/limitwatch/background.js      Meneruskan pesan antara halaman dan aplikasi
+```
+
+### Kustomisasi
+
+- **Kata-kata deteksi:** pola di bagian atas `www/limitwatch/content.js` (`LIMIT_RE`, `POPUP_RE`, `RESET_RE`, `RESUME_BTN_RE`).
+- **Pembacaan jam reset:** `parseResetAt` di `www/app.js`.
+- **Pilihan cek otomatis:** `AUTO_OPTS` di `www/app.js`.
+- **Command bawaan:** `DEFAULT_CMD` di `www/app.js`. Pakai `{project}` untuk nama project. Tiap akun juga bisa punya command sendiri di panel detailnya.
+
+### Pemecahan masalah
+
+- **Build gagal dengan pesan "Secret DEBUG_KEYSTORE_BASE64 belum diisi":** buat secret seperti penjelasan di atas.
+- **"Tutup browser aplikasi dulu, lalu cek lagi":** tutup browser aplikasi, lalu jalankan cek lagi.
+- **Limit tidak terdeteksi:** buka akun di browser dan lihat kalimat persis di halaman, lalu sesuaikan pola di `content.js`. Sebagai cadangan, ubah akun ke Limit sendiri dan atur jamnya manual.
+- **Command terketik tapi tidak terkirim:** nama tombol kirim mungkin berubah. Perbarui `SEND_SEL` di `content.js`. Command juga disalin ke clipboard, jadi bisa ditempel manual.
+- **Email login tidak terisi:** isi email di panel detail akun, atau pakai alamat email sebagai nama akun.
