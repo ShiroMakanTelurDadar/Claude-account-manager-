@@ -42,6 +42,7 @@ const BAIT_INTERVAL = 3 * 3600 * 1000;
 const BAIT_TIMEOUT = 35000;      // ms: batas waktu satu langkah pancingan per akun
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
 let baitBtn = null;              // tombol ON / OFF pancingan
+let baitRunBtn = null;           // tombol 🎣 pancing sekarang
 
 const fmt = new Intl.DateTimeFormat('id-ID', {
   weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -89,8 +90,7 @@ async function loadSettings() {
   } catch {}
   // Pemakaian pertama: hitungan jadwal mulai dari sekarang
   if (!settings.lastAuto) { settings.lastAuto = Date.now(); saveSettings(); }
-  // Pemakaian pertama: hitungan 3 jam pancingan mulai dari sekarang
-  if (!settings.lastBait) { settings.lastBait = Date.now(); saveSettings(); }
+  // lastBait = 0 (belum pernah memancing): cek otomatis pertama sesudah aplikasi dipasang langsung didahului pancingan
 }
 async function saveSettings() {
   const raw = JSON.stringify(settings);
@@ -663,12 +663,14 @@ function initTools() {
     autoSel.append(el('option', { value: String(m), text: m ? `Auto cek: ${label}` : 'Auto cek: Mati' }));
   }
   autoSel.value = String(settings.autoMin);
+  baitRunBtn = el('button', { type: 'button', class: 'tbtn', text: '🎣', title: 'Pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancing sekarang', onclick: baitNow });
   baitBtn = el('button', { type: 'button', class: 'tbtn', onclick: toggleBait });
   updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
   const tools = el('div', { class: 'tools' },
     checkBtn,
     autoSel,
+    baitRunBtn,
     baitBtn,
     el('button', { type: 'button', class: 'tbtn', text: '⬇ Ekspor data', onclick: exportData }),
     el('button', { type: 'button', class: 'tbtn', text: '⬆ Impor data', onclick: importData }),
@@ -797,6 +799,7 @@ function setCheckBtn(text) {
   if (!checkBtn) return;
   checkBtn.textContent = text || '⟳ Cek semua akun';
   checkBtn.disabled = !!text;
+  if (baitRunBtn) baitRunBtn.disabled = !!text;
 }
 
 // Perbarui tombol ⟳ di semua kartu (aktif / sedang mengecek)
@@ -857,7 +860,10 @@ async function runChecks(list, opts = {}) {
   return true;
 }
 
+function baitDue() { return settings.baitOn && Date.now() - settings.lastBait >= BAIT_INTERVAL; }
 function checkAll() { return runChecks(accounts.slice()); }
+// Tombol 🎣: jalankan pancingan + pengecekan sekarang (tidak menunggu 3 jam, tetap jalan walau pancingan OFF)
+function baitNow() { return runBaitCycle(accounts.slice()); }
 function checkOne(a) { return runChecks([a]); }
 
 // ---------- Cek otomatis berkala ----------
@@ -884,7 +890,7 @@ function updateAutoHint() {
     const hm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     t = `Cek otomatis berikutnya sekitar ${hm}.`;
     if (settings.baitOn) {
-      const at = settings.lastBait + BAIT_INTERVAL;
+      const at = settings.lastBait ? settings.lastBait + BAIT_INTERVAL : 0;
       const hm2 = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       t += at <= Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now())
         ? ' Didahului pancingan.'
@@ -905,13 +911,12 @@ function maybeAutoCheck() {
 async function autoCheck() {
   autoHoldUntil = Date.now() + 60000;   // kalau ditunda (browser terbuka), coba lagi semenit kemudian
   // Cek otomatis yang jalan sesudah 3 jam sejak pancingan terakhir didahului pancingan. Lalu hitungan 3 jam mulai dari nol.
-  const useBait = settings.baitOn && Date.now() - settings.lastBait >= BAIT_INTERVAL;
+  const useBait = baitDue();
   const ok = useBait
     ? await runBaitCycle(accounts.slice(), { auto: true })
     : await runChecks(accounts.slice(), { auto: true });
   if (ok) {
     settings.lastAuto = Date.now();
-    if (useBait) settings.lastBait = Date.now();
     saveSettings();
     updateAutoHint();
   }
@@ -920,13 +925,13 @@ async function autoCheck() {
 // ---------- Pancingan ----------
 function updateBaitBtn() {
   if (!baitBtn) return;
-  baitBtn.textContent = `🎣 Pancingan: ${settings.baitOn ? 'ON' : 'OFF'}`;
+  baitBtn.textContent = `Pancingan: ${settings.baitOn ? 'ON' : 'OFF'}`;
   baitBtn.classList.toggle('ok', settings.baitOn);
 }
 
 function toggleBait() {
   settings.baitOn = !settings.baitOn;
-  if (settings.baitOn) settings.lastBait = Date.now();   // dari OFF ke ON: hitungan 3 jam mulai dari sekarang
+  if (settings.baitOn && settings.lastBait) settings.lastBait = Date.now();   // dari OFF ke ON: hitungan 3 jam mulai dari sekarang (kalau belum pernah memancing, tetap langsung)
   saveSettings();
   updateBaitBtn();
   updateAutoHint();
@@ -970,6 +975,7 @@ async function runBaitCycle(list, opts = {}) {
   baitMemory = new Map();
   const tally = {};
   let aborted = '';
+  let usable = 0;   // jumlah akun yang pancingannya menghasilkan limit / free
   try {
     // Tahap 1: pancingan semua akun
     for (let i = 0; i < list.length && !aborted; i++) {
@@ -1014,7 +1020,7 @@ async function runBaitCycle(list, opts = {}) {
           mem.state = verdict;
         }
       }
-      if (verdict === 'limit' || verdict === 'free') applyBait(a, verdict, text);
+      if (verdict === 'limit' || verdict === 'free') { usable++; applyBait(a, verdict, text); }
       tally[BAIT_LABEL[verdict] || verdict] = (tally[BAIT_LABEL[verdict] || verdict] || 0) + 1;
 
       // Kembali ke chat utama dan cek seperti biasa
@@ -1036,6 +1042,8 @@ async function runBaitCycle(list, opts = {}) {
     if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
     return false;
   }
+  // Hitungan 3 jam baru mulai kalau ada akun yang benar-benar terpancing (sudah login). Kalau belum, pancingan diulang di cek berikutnya.
+  if (usable > 0) { settings.lastBait = Date.now(); saveSettings(); }
   if (!opts.auto || !document.hidden) {
     toast('Pancingan + cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6500);
   }
