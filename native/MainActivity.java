@@ -1,8 +1,6 @@
 package com.local.claudeaccountmanager;
 
 import android.app.Activity;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
@@ -11,10 +9,9 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
-import android.provider.Settings;
-import android.service.notification.NotificationListenerService;
-import android.service.notification.StatusBarNotification;
 import android.view.Gravity;
+import android.view.MotionEvent;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -36,8 +33,6 @@ import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebExtension;
 
 import java.util.ArrayList;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class MainActivity extends BridgeActivity {
 
@@ -52,62 +47,17 @@ public class MainActivity extends BridgeActivity {
         void done(JSObject res);
     }
 
-    // Jembatan JS -> native: open, check, takePending, codeAccess, openCodeAccess
+    // Jembatan JS -> native: open, check, takePending
     @CapacitorPlugin(name = "GeckoBrowser")
     public static class GeckoBrowser extends Plugin {
         private static GeckoBrowser sInstance;
-        private static Context sAppCtx;
         // Status halaman (limit / busy / reset / idle / loggedout) yang terdeteksi saat layar utama sedang di belakang browser.
         // Tiap item: {accountId, state, text, url, waktu-ms}
         private static final ArrayList<String[]> PENDING = new ArrayList<>();
 
-        // Kode verifikasi login terbaru dari notifikasi Gmail (6 digit)
-        private static String sCode = null;
-        private static long sCodeAt = 0;
-        private static boolean sCodeUsed = true;
-        private static String sLastClipCode = null;
-        private static final Pattern CLIP_CODE = Pattern.compile("^\\s*(\\d{3})[\\s-]?(\\d{3})\\s*$");
-
         @Override
         public void load() {
             sInstance = this;
-            sAppCtx = getContext().getApplicationContext();
-        }
-
-        // Dipanggil CodeListener saat ada notifikasi Gmail berisi kode
-        static synchronized void putCode(String code) {
-            sCode = code;
-            sCodeAt = System.currentTimeMillis();
-            sCodeUsed = false;
-        }
-
-        // Kode terbaru (maksimal 10 menit) dan hanya sekali pakai. Cadangan: isi clipboard yang persis 6 digit.
-        static synchronized String takeCode() {
-            if (sCode != null && !sCodeUsed && System.currentTimeMillis() - sCodeAt < 10 * 60 * 1000L) {
-                sCodeUsed = true;
-                return sCode;
-            }
-            return clipboardCode();
-        }
-
-        private static String clipboardCode() {
-            try {
-                if (sAppCtx == null) return null;
-                ClipboardManager cm = (ClipboardManager) sAppCtx.getSystemService(Context.CLIPBOARD_SERVICE);
-                if (cm == null || !cm.hasPrimaryClip()) return null;
-                ClipData cd = cm.getPrimaryClip();
-                if (cd == null || cd.getItemCount() == 0) return null;
-                CharSequence t = cd.getItemAt(0).getText();
-                if (t == null) return null;
-                Matcher m = CLIP_CODE.matcher(t.toString());
-                if (!m.matches()) return null;
-                String code = m.group(1) + m.group(2);
-                if (code.equals(sLastClipCode)) return null;
-                sLastClipCode = code;
-                return code;
-            } catch (Exception e) {
-                return null;
-            }
         }
 
         // Dipanggil dari GeckoActivity saat halaman melapor status
@@ -144,6 +94,7 @@ public class MainActivity extends BridgeActivity {
             i.putExtra("accountId", call.getString("accountId", "default"));
             i.putExtra("url", call.getString("url", "https://claude.ai/new"));
             i.putExtra("email", call.getString("email", ""));
+            i.putExtra("command", call.getString("command", ""));
             getActivity().startActivity(i);
             call.resolve();
         }
@@ -162,24 +113,6 @@ public class MainActivity extends BridgeActivity {
                             call.resolve(res);
                         }
                     });
-        }
-
-        // Apakah izin baca notifikasi (untuk kode Gmail) sudah aktif
-        @PluginMethod
-        public void codeAccess(PluginCall call) {
-            String s = Settings.Secure.getString(getContext().getContentResolver(), "enabled_notification_listeners");
-            JSObject r = new JSObject();
-            r.put("enabled", s != null && s.contains(getContext().getPackageName()));
-            call.resolve(r);
-        }
-
-        // Buka halaman setelan Android tempat izin baca notifikasi diaktifkan
-        @PluginMethod
-        public void openCodeAccess(PluginCall call) {
-            Intent i = new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS);
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            getActivity().startActivity(i);
-            call.resolve();
         }
 
         // Mengambil dan mengosongkan antrean laporan halaman
@@ -204,40 +137,6 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    // Membaca notifikasi email dari Gmail dan mengambil kode verifikasi login Claude (6 digit).
-    // Aktif setelah pengguna memberi izin "Akses notifikasi" untuk aplikasi ini.
-    public static class CodeListener extends NotificationListenerService {
-        private static final Pattern FROM_CLAUDE = Pattern.compile("claude|anthropic", Pattern.CASE_INSENSITIVE);
-        private static final Pattern CODE = Pattern.compile("(?<!\\d)(\\d{3})[\\s-]?(\\d{3})(?!\\d)");
-
-        @Override
-        public void onNotificationPosted(StatusBarNotification sbn) {
-            try {
-                String pkg = sbn.getPackageName();
-                if (!"com.google.android.gm".equals(pkg) && !"com.google.android.gm.lite".equals(pkg)) return;
-                Bundle ex = sbn.getNotification().extras;
-                if (ex == null) return;
-                StringBuilder sb = new StringBuilder();
-                String[] keys = {"android.title", "android.text", "android.bigText", "android.subText", "android.summaryText"};
-                for (String k : keys) {
-                    CharSequence cs = ex.getCharSequence(k);
-                    if (cs != null) sb.append(cs).append('\n');
-                }
-                CharSequence[] lines = ex.getCharSequenceArray("android.textLines");
-                if (lines != null) {
-                    for (CharSequence cs : lines) {
-                        if (cs != null) sb.append(cs).append('\n');
-                    }
-                }
-                String all = sb.toString();
-                if (!FROM_CLAUDE.matcher(all).find()) return;
-                Matcher m = CODE.matcher(all);
-                if (m.find()) GeckoBrowser.putCode(m.group(1) + m.group(2));
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
     // Layar browser (mesin Firefox). Tiap akun = contextId sendiri = cookie/login terpisah.
     public static class GeckoActivity extends Activity {
         private static final String EXT_URI = "resource://android/assets/public/limitwatch/";
@@ -247,6 +146,9 @@ public class MainActivity extends BridgeActivity {
         private static boolean sExtReady = false;
         private static volatile String sCurrentAccountId = "default";
         private static volatile String sCurrentEmail = "";
+        // Command dari tombol Continue aplikasi. Dikirim ke chat oleh ekstensi, sekali saja (berlaku 3 menit).
+        private static volatile String sPendingCommand = "";
+        private static volatile long sPendingCommandAt = 0;
 
         // Pengecekan latar belakang: selama sCheckAccountId tidak null, laporan halaman dicatat di sini
         private static volatile String sCheckAccountId = null;
@@ -272,7 +174,7 @@ public class MainActivity extends BridgeActivity {
             sCheckUrl = url;
         }
 
-        // Menerima laporan halaman dan permintaan bantuan login dari ekstensi limitwatch
+        // Menerima laporan halaman dan permintaan email login dari ekstensi limitwatch
         private static final WebExtension.MessageDelegate MESSAGE_DELEGATE =
                 new WebExtension.MessageDelegate() {
                     @Override
@@ -284,18 +186,16 @@ public class MainActivity extends BridgeActivity {
                                 JSONObject msg = (JSONObject) message;
                                 String type = msg.optString("type", "pageState");
                                 if ("loginHelp".equals(type)) {
-                                    // Email akun dan kode terbaru. Kosong saat pengecekan latar belakang,
+                                    // Email akun untuk isi otomatis di halaman login. Kosong saat pengecekan latar belakang,
                                     // supaya pengecekan tidak memicu email login.
                                     JSONObject o = new JSONObject();
-                                    o.put("email", "");
-                                    o.put("code", "");
-                                    if (sCheckAccountId == null) {
-                                        o.put("email", sCurrentEmail);
-                                        String code = GeckoBrowser.takeCode();
-                                        if (code != null) o.put("code", code);
-                                    }
+                                    o.put("email", sCheckAccountId == null ? sCurrentEmail : "");
+                                    boolean cmdFresh = System.currentTimeMillis() - sPendingCommandAt < 180000L;
+                                    o.put("command", sCheckAccountId == null && cmdFresh ? sPendingCommand : "");
                                     out = new GeckoResult<>();
                                     out.complete(o);
+                                } else if ("commandDone".equals(type)) {
+                                    sPendingCommand = "";
                                 } else {
                                     String state = msg.optString("state", "limit");
                                     String text = msg.optString("text", "");
@@ -414,6 +314,9 @@ public class MainActivity extends BridgeActivity {
             if (url == null) url = "https://claude.ai/new";
             sCurrentAccountId = accountId;
             sCurrentEmail = email == null ? "" : email;
+            String command = getIntent().getStringExtra("command");
+            sPendingCommand = command == null ? "" : command;
+            sPendingCommandAt = System.currentTimeMillis();
 
             if (sRuntime == null) {
                 sRuntime = GeckoRuntime.create(getApplicationContext());
@@ -438,6 +341,7 @@ public class MainActivity extends BridgeActivity {
             root.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             root.addView(buildHomeButton(), homeButtonParams());
+            root.addView(buildRefreshButton(), refreshButtonParams());
             setContentView(root);
 
             loadWhenReady(url);
@@ -479,6 +383,85 @@ public class MainActivity extends BridgeActivity {
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     size, size, Gravity.START | Gravity.CENTER_VERTICAL);
             lp.leftMargin = (int) (6 * d);
+            return lp;
+        }
+
+        // Tombol refresh melayang. Saat tidak dipakai pudar (kontras rendah), bisa digeser ke mana saja.
+        private TextView buildRefreshButton() {
+            final float d = getResources().getDisplayMetrics().density;
+            final float idleAlpha = 0.3f;
+            final Handler h = new Handler(Looper.getMainLooper());
+            final TextView b = new TextView(this);
+            b.setText("↻");
+            b.setTextSize(20f);
+            b.setTextColor(0xFFB8C4D0);
+            b.setGravity(Gravity.CENTER);
+            b.setAlpha(idleAlpha);
+            b.setElevation(8 * d);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setShape(GradientDrawable.OVAL);
+            bg.setColor(0xAA2A3340);
+            bg.setStroke((int) (1 * d), 0x449AA7B5);
+            b.setBackground(bg);
+            b.setContentDescription("Muat ulang halaman");
+            final Runnable fade = new Runnable() {
+                @Override
+                public void run() {
+                    b.animate().alpha(idleAlpha).setDuration(400).start();
+                }
+            };
+            b.setOnTouchListener(new View.OnTouchListener() {
+                private float downX, downY, startX, startY;
+                private boolean moved;
+
+                @Override
+                public boolean onTouch(View v, MotionEvent e) {
+                    View parent = (View) v.getParent();
+                    switch (e.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            h.removeCallbacks(fade);
+                            v.animate().cancel();
+                            v.setAlpha(0.9f);
+                            downX = e.getRawX();
+                            downY = e.getRawY();
+                            startX = v.getX();
+                            startY = v.getY();
+                            moved = false;
+                            return true;
+                        case MotionEvent.ACTION_MOVE: {
+                            float dx = e.getRawX() - downX;
+                            float dy = e.getRawY() - downY;
+                            if (!moved && Math.abs(dx) + Math.abs(dy) > 10 * d) moved = true;
+                            if (moved && parent != null) {
+                                float nx = Math.max(0, Math.min(parent.getWidth() - v.getWidth(), startX + dx));
+                                float ny = Math.max(0, Math.min(parent.getHeight() - v.getHeight(), startY + dy));
+                                v.setX(nx);
+                                v.setY(ny);
+                            }
+                            return true;
+                        }
+                        case MotionEvent.ACTION_UP:
+                            if (!moved && session != null) session.reload();
+                            h.postDelayed(fade, 2500);
+                            return true;
+                        case MotionEvent.ACTION_CANCEL:
+                            h.postDelayed(fade, 2500);
+                            return true;
+                        default:
+                            return false;
+                    }
+                }
+            });
+            return b;
+        }
+
+        private FrameLayout.LayoutParams refreshButtonParams() {
+            float d = getResources().getDisplayMetrics().density;
+            int size = (int) (40 * d);
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                    size, size, Gravity.START | Gravity.CENTER_VERTICAL);
+            lp.leftMargin = (int) (8 * d);
+            lp.topMargin = (int) (96 * d);
             return lp;
         }
 
