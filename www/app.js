@@ -37,7 +37,7 @@ const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // l
 
 // ---------- Fitur pancingan ----------
 // Tiap akun: chat baru -> kirim "." -> respon Claude dihentikan secepatnya -> catat limit / free di memori sementara.
-// Aktif tiap BAIT_INTERVAL (3 jam): begitu cek otomatis mau jalan dan sudah 3 jam sejak pancingan terakhir, cek itu didahului pancingan.
+// Sesi pertama = tombol 🎣 (cek otomatis menunggu itu). Sesudahnya tiap BAIT_INTERVAL (3 jam): begitu cek otomatis mau jalan dan sudah 3 jam sejak pancingan terakhir, cek itu didahului pancingan.
 const BAIT_INTERVAL = 3 * 3600 * 1000;
 const BAIT_TIMEOUT = 35000;      // ms: batas waktu satu langkah pancingan per akun
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
@@ -90,7 +90,7 @@ async function loadSettings() {
   } catch {}
   // Pemakaian pertama: hitungan jadwal mulai dari sekarang
   if (!settings.lastAuto) { settings.lastAuto = Date.now(); saveSettings(); }
-  // lastBait = 0 (belum pernah memancing): cek otomatis pertama sesudah aplikasi dipasang langsung didahului pancingan
+  // lastBait = 0 (belum pernah memancing): cek otomatis menunggu sampai tombol 🎣 menyelesaikan satu sesi
 }
 async function saveSettings() {
   const raw = JSON.stringify(settings);
@@ -885,6 +885,8 @@ function updateAutoHint() {
     t = 'Cek otomatis mati. Pakai tombol ⟳ di tiap akun atau "Cek semua akun".';
   } else if (checking) {
     t = 'Sedang mengecek akun di belakang layar...';
+  } else if (settings.baitOn && !settings.lastBait) {
+    t = 'Tekan 🎣 sekali dulu (akun sudah login). Setelah sesi pertama selesai, cek otomatis dan pancingan jalan sendiri.';
   } else {
     const next = Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now());
     const hm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -903,6 +905,8 @@ function updateAutoHint() {
 // Dipanggil tiap detik dan saat aplikasi dibuka lagi. Kalau jadwal terlewat (aplikasi tertutup), langsung dijalankan.
 function maybeAutoCheck() {
   if (!native || !settings.autoMin || checking || resumeBusy || !accounts.length) return;
+  // Pertama kali setelah dipasang: cek otomatis dan pancingan baru aktif setelah tombol 🎣 selesai satu sesi (lastBait terisi)
+  if (settings.baitOn && !settings.lastBait) return;
   const now = Date.now();
   if (now < settings.lastAuto + settings.autoMin * 60000 || now < autoHoldUntil) return;
   autoCheck();
