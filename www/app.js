@@ -3,6 +3,7 @@ const DEFAULT_CMD = 'Lanjutkan project "{project}" dari bagian terakhir yang bel
 const CLAUDE_URL = 'https://claude.ai/new';
 const LOGIN_URL = 'https://claude.ai/login';
 const STORE_KEY = 'accounts';
+const SETTINGS_KEY = 'settings';
 
 const Cap = window.Capacitor || {};
 const P = Cap.Plugins || {};
@@ -21,11 +22,18 @@ const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terli
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
 const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
 const CHECK_TIMEOUT = 24000;     // ms: batas waktu cek satu akun di belakang layar
+const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
 let resumeBusy = false;          // sedang membuka browser untuk auto-continue (satu akun pada satu waktu)
 let checkBtn = null;             // tombol "Cek semua akun"
-let codeBtn = null;              // tombol izin baca kode Gmail
+let checkingId = null;           // akun yang sedang dicek di belakang layar
+let autoSel = null;              // pilihan interval cek otomatis
+let autoHint = null;             // teks jadwal cek otomatis
+let autoHoldUntil = 0;           // ms: jeda sebelum cek otomatis dicoba lagi (mis. browser sedang terbuka)
+// Pilihan interval cek otomatis (menit). 0 = mati.
+const AUTO_OPTS = [[0, 'Mati'], [30, '30 menit'], [60, '1 jam'], [120, '2 jam'], [300, '5 jam']];
+const settings = { autoMin: 60, lastAuto: 0 };   // lastAuto = patokan jadwal cek otomatis berikutnya
 
 const fmt = new Intl.DateTimeFormat('id-ID', {
   weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -55,6 +63,28 @@ async function saveAccounts() {
   try {
     if (native && P.Preferences) await P.Preferences.set({ key: STORE_KEY, value: raw });
     else localStorage.setItem(STORE_KEY, raw);
+  } catch {}
+}
+
+async function loadSettings() {
+  try {
+    const raw = native && P.Preferences
+      ? (await P.Preferences.get({ key: SETTINGS_KEY })).value
+      : localStorage.getItem(SETTINGS_KEY);
+    const st = JSON.parse(raw || 'null');
+    if (st && typeof st === 'object') {
+      if (AUTO_OPTS.some(([m]) => m === st.autoMin)) settings.autoMin = st.autoMin;
+      if (typeof st.lastAuto === 'number') settings.lastAuto = st.lastAuto;
+    }
+  } catch {}
+  // Pemakaian pertama: hitungan jadwal mulai dari sekarang
+  if (!settings.lastAuto) { settings.lastAuto = Date.now(); saveSettings(); }
+}
+async function saveSettings() {
+  const raw = JSON.stringify(settings);
+  try {
+    if (native && P.Preferences) await P.Preferences.set({ key: SETTINGS_KEY, value: raw });
+    else localStorage.setItem(SETTINGS_KEY, raw);
   } catch {}
 }
 
@@ -138,6 +168,24 @@ function countdownShort(ms) {
   return h > 0 ? `${h}j ${pad(m)}m` : `${pad(m)}:${pad(s % 60)}`;
 }
 
+// Jam (dan tanggal kalau bukan hari ini) dari waktu ISO
+function atShort(iso) {
+  const d = new Date(iso);
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.toDateString() === new Date().toDateString() ? hm : `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${hm}`;
+}
+
+// Asal waktu reset: 'auto' (terbaca dari banner chat), 'manual' (diatur pengguna), 'default' (perkiraan 5 jam)
+function resetSource(a) {
+  if (!a.resetAt) return '';
+  if (a.resetSrc === 'manual') {
+    return `Manual${a.resetAuto ? ` · terbaca otomatis: ${atShort(a.resetAuto)}` : ' · belum ada waktu otomatis'}`;
+  }
+  if (a.resetSrc === 'auto') return 'Otomatis (terbaca dari chat Claude)';
+  if (a.resetSrc === 'default') return 'Perkiraan 5 jam (belum terbaca dari chat). Akan diganti otomatis kalau terdeteksi.';
+  return '';
+}
+
 function timeShort(a) {
   if (!a.resetAt) return '--:--';
   const d = new Date(a.resetAt);
@@ -162,7 +210,7 @@ function ago(ms) {
 
 const CHECK_LABEL = {
   limit: 'limit aktif', busy: 'sedang bekerja', reset: 'limit sudah selesai',
-  idle: 'tidak ada project berjalan', loggedout: 'belum login', unknown: 'tidak terbaca',
+  resume: 'bisa dilanjutkan (Continue / Try again)', idle: 'tidak ada project berjalan', loggedout: 'belum login', unknown: 'tidak terbaca',
 };
 
 // Catat status terakhir yang terlihat di halaman akun (dari browser maupun dari cek latar belakang).
@@ -185,17 +233,39 @@ function setStatus(a, status) {
   a.status = status;
   a.notified = false;
   if (status === 'working') {
-    a.resetAt = a.resetAt || new Date(Date.now() + 5 * 3600e3).toISOString();
+    if (!a.resetAt) { a.resetAt = new Date(Date.now() + 5 * 3600e3).toISOString(); a.resetSrc = 'default'; }
   } else {
     a.resetAt = null;
+    a.resetSrc = null;
+    a.resetAuto = null;
     a.percent = 100;
   }
   commit();
 }
 
-function setResetIn(a, hours) {
-  a.resetAt = new Date(Date.now() + hours * 3600e3).toISOString();
+// Atur waktu reset manual (opsi kedua). Dipertahankan sampai limit selesai atau tombol "Pakai otomatis" ditekan.
+function setResetManual(a, iso) {
+  a.resetAt = iso;
+  a.resetSrc = 'manual';
   a.notified = false;
+  commit();
+}
+
+function setResetIn(a, hours) {
+  setResetManual(a, new Date(Date.now() + hours * 3600e3).toISOString());
+}
+
+// Kembali ke waktu otomatis dari aplikasi
+function useAutoReset(a) {
+  a.notified = false;
+  if (a.resetAuto && Date.parse(a.resetAuto) > Date.now()) {
+    a.resetAt = a.resetAuto;
+    a.resetSrc = 'auto';
+    toast(`Memakai waktu otomatis: ${atShort(a.resetAt)}.`);
+  } else {
+    a.resetSrc = 'default';
+    toast('Belum ada waktu otomatis dari chat. Akan dipakai begitu terdeteksi.');
+  }
   commit();
 }
 
@@ -294,15 +364,25 @@ function onLimitSeen(accountId, text, url, evAt) {
   const chatChanged = !!chat && a.chatUrl !== chat;
   if (chatChanged) a.chatUrl = chat;
   const at = parsed;
+  // Waktu otomatis selalu dicatat, walau waktu manual sedang dipakai (ditampilkan sebagai pembanding)
+  const autoChanged = !!at && a.resetAuto !== at.toISOString();
+  if (at) a.resetAuto = at.toISOString();
   if (a.status === 'working' && a.resetAt) {
+    // Waktu manual dipertahankan sampai pengguna menekan "Pakai otomatis"
+    if (a.resetSrc === 'manual') {
+      if (chatChanged || autoChanged) commit();
+      return;
+    }
     if (!at || Math.abs(Date.parse(a.resetAt) - at.getTime()) < 60000) {
-      if (chatChanged) commit();
+      if (at && a.resetSrc !== 'auto') a.resetSrc = 'auto';
+      if (chatChanged || autoChanged) commit();
       return;
     }
   }
   a.status = 'working';
   a.notified = false;
   a.resetAt = (at || new Date(Date.now() + 5 * 3600e3)).toISOString();
+  a.resetSrc = at ? 'auto' : 'default';
   commit();
   toast(`Limit terdeteksi di "${a.name}". Status: Working, Pending Project sampai limit reset.`);
 }
@@ -341,6 +421,11 @@ function onPageEvent(ev) {
   } else if (state === 'loggedout') {
     busyAt.delete(a.id);
     render();
+  } else if (state === 'resume') {
+    // Tombol Continue / Try again terlihat di chat: simpan link chat supaya tombol Continue membuka chat yang benar
+    busyAt.delete(a.id);
+    if (/^https:\/\/claude\.ai\/chat\//.test(ev.url || '') && a.chatUrl !== ev.url) { a.chatUrl = ev.url; saveAccounts(); }
+    tick();
   } else if (state === 'reset') {
     onResetSeen(a.id, ev.url, at);
   } else {
@@ -530,14 +615,21 @@ function initTools() {
   const s = document.getElementById('summary');
   if (!s) return;
   checkBtn = el('button', { type: 'button', class: 'tbtn', text: '⟳ Cek semua akun', onclick: checkAll });
-  codeBtn = el('button', { type: 'button', class: 'tbtn', text: '🔑 Kode Gmail', onclick: onCodeBtn });
-  s.after(el('div', { class: 'tools' },
+  autoSel = el('select', { class: 'tsel', 'aria-label': 'Cek otomatis', onchange: onAutoChange });
+  for (const [m, label] of AUTO_OPTS) {
+    autoSel.append(el('option', { value: String(m), text: m ? `Auto cek: ${label}` : 'Auto cek: Mati' }));
+  }
+  autoSel.value = String(settings.autoMin);
+  autoHint = el('div', { class: 'hint2 autohint' });
+  const tools = el('div', { class: 'tools' },
     checkBtn,
-    codeBtn,
+    autoSel,
     el('button', { type: 'button', class: 'tbtn', text: '⬇ Ekspor data', onclick: exportData }),
     el('button', { type: 'button', class: 'tbtn', text: '⬆ Impor data', onclick: importData }),
-  ));
-  refreshCodeBtn();
+  );
+  s.after(tools);
+  tools.after(autoHint);
+  updateAutoHint();
 }
 
 // ---------- Status turunan satu akun ----------
@@ -552,12 +644,14 @@ function view(a) {
   const c = a.check;
   const checkBusy = !!c && c.state === 'busy' && now - c.at < CHECK_BUSY_TTL;
   const loggedOut = !!c && c.state === 'loggedout';
+  // Chat menampilkan Continue / Try again (atau limit sudah selesai) dan Claude tidak sedang bekerja
+  const resumable = !!c && (c.state === 'resume' || c.state === 'reset') && now - c.at < RESUME_TTL && !live;
   return {
-    working, list, ms, waiting, over, loggedOut,
+    working, list, ms, waiting, over, loggedOut, resumable,
     busy: live || checkBusy,
     busyFromCheck: !live && checkBusy,
     checkAge: c ? now - c.at : 0,
-    can: !waiting && list.length > 0,
+    can: resumable || (!waiting && list.length > 0),
   };
 }
 
@@ -568,6 +662,7 @@ function view(a) {
 //  - tidak ada apa-apa                   -> "No projects in progress"
 function noteText(v) {
   if (v.loggedOut) return 'Belum login · tekan 🔗';
+  if (v.resumable) return 'Continue / Try again terdeteksi · tekan Continue';
   if (v.waiting) return `Pending Project · ${countdownShort(v.ms)}`;
   if (v.busy) return 'There is Project in progress' + (v.busyFromCheck ? ` · cek ${ago(v.checkAge)}` : '');
   if (v.list.length) return `Pending Project · siap lanjut (${v.list.length})`;
@@ -578,6 +673,8 @@ function noteText(v) {
 function freeUp(a) {
   a.status = 'free';
   a.resetAt = null;
+  a.resetSrc = null;
+  a.resetAuto = null;
   a.percent = 100;
   a.notified = false;
 }
@@ -598,6 +695,7 @@ async function autoResume(a, why) {
 
     const p = a.projects.shift();
     freeUp(a);
+    if (a.check && (a.check.state === 'reset' || a.check.state === 'resume')) a.check = { state: 'idle', at: Date.now() };
     commit();
 
     const src = reason === 'page' ? 'Chat menampilkan "You can try again now"'
@@ -655,52 +753,106 @@ function setCheckBtn(text) {
   checkBtn.disabled = !!text;
 }
 
-async function checkAll() {
+// Perbarui tombol ⟳ di semua kartu (aktif / sedang mengecek)
+function refreshChecking() {
+  for (const a of accounts) {
+    const root = cards.get(a.id);
+    if (root) live(root, a);
+  }
+}
+
+// Cek satu atau beberapa akun berurutan di belakang layar. Hasil tiap akun langsung dipasang ke kartunya.
+// opts.auto: dipicu jadwal (toast hanya muncul kalau aplikasi sedang terlihat)
+// Mengembalikan true kalau pengecekan selesai, false kalau tidak jalan atau ditunda.
+async function runChecks(list, opts = {}) {
   const G = P.GeckoBrowser;
-  if (!native || !G || !G.check) { toast('Cek akun hanya jalan di aplikasi Android.'); return; }
-  if (checking) return;
-  if (!accounts.length) { toast('Belum ada akun.'); return; }
+  if (!native || !G || !G.check) { if (!opts.auto) toast('Cek akun hanya jalan di aplikasi Android.'); return false; }
+  if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
+  if (!list.length) { if (!opts.auto) toast('Belum ada akun.'); return false; }
   checking = true;
-  const list = accounts.slice();
+  updateAutoHint();
   const tally = {};
+  let aborted = '';
+  let lastLabel = '';
   try {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
       if (!accounts.includes(a)) continue;
-      setCheckBtn(`Cek ${i + 1}/${list.length}...`);
+      checkingId = a.id;
+      setCheckBtn(list.length > 1 ? `Cek ${i + 1}/${list.length}...` : 'Mengecek...');
+      refreshChecking();
       let res;
       try {
         res = await G.check({ accountId: a.id, url: a.chatUrl || CLAUDE_URL, timeoutMs: CHECK_TIMEOUT });
       } catch (e) { res = { state: 'unknown' }; }
+      // Ada browser terbuka atau cek lain berjalan: hentikan, jangan timpa status akun dengan "tidak terbaca"
+      if (res.error) { aborted = res.error; break; }
       applyCheck(a, res);
-      const label = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
-      tally[label] = (tally[label] || 0) + 1;
+      lastLabel = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
+      tally[lastLabel] = (tally[lastLabel] || 0) + 1;
     }
   } finally {
     checking = false;
+    checkingId = null;
     setCheckBtn(null);
+    refreshChecking();
+    updateAutoHint();
   }
-  toast('Cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6000);
+  if (aborted) {
+    if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
+    return false;
+  }
+  if (!opts.auto || !document.hidden) {
+    const head = opts.auto ? 'Cek otomatis selesai. ' : 'Cek selesai. ';
+    toast(list.length === 1
+      ? `Cek "${shortName(list[0].name)}": ${lastLabel || CHECK_LABEL.unknown}.`
+      : head + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6000);
+  }
+  return true;
 }
 
-// Izin baca notifikasi Gmail (untuk kode login otomatis)
-async function refreshCodeBtn() {
-  const G = P.GeckoBrowser;
-  if (!codeBtn || !native || !G || !G.codeAccess) return;
-  try {
-    const r = await G.codeAccess();
-    codeBtn.textContent = r.enabled ? '✅ Kode Gmail aktif' : '🔑 Aktifkan kode Gmail';
-    codeBtn.classList.toggle('ok', !!r.enabled);
-    codeBtn._on = !!r.enabled;
-  } catch {}
+function checkAll() { return runChecks(accounts.slice()); }
+function checkOne(a) { return runChecks([a]); }
+
+// ---------- Cek otomatis berkala ----------
+function onAutoChange() {
+  const m = parseInt(autoSel.value, 10) || 0;
+  // Dari mati ke aktif: hitungan mulai dari sekarang
+  if (!settings.autoMin && m) settings.lastAuto = Date.now();
+  settings.autoMin = m;
+  saveSettings();
+  updateAutoHint();
+  const label = (AUTO_OPTS.find(([x]) => x === m) || [0, ''])[1];
+  toast(m ? `Cek otomatis semua akun tiap ${label}.` : 'Cek otomatis dimatikan.');
 }
 
-async function onCodeBtn() {
-  const G = P.GeckoBrowser;
-  if (!native || !G) return;
-  if (codeBtn._on) { toast('Kode login dibaca otomatis dari notifikasi Gmail.'); return; }
-  toast('Aktifkan "Claude Account Manager" di daftar Akses notifikasi.');
-  try { await G.openCodeAccess(); } catch {}
+function updateAutoHint() {
+  if (!autoHint) return;
+  let t;
+  if (!settings.autoMin) {
+    t = 'Cek otomatis mati. Pakai tombol ⟳ di tiap akun atau "Cek semua akun".';
+  } else if (checking) {
+    t = 'Sedang mengecek akun di belakang layar...';
+  } else {
+    const next = Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now());
+    const hm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    t = `Cek otomatis berikutnya sekitar ${hm}.`;
+  }
+  if (autoHint.textContent !== t) autoHint.textContent = t;
+}
+
+// Dipanggil tiap detik dan saat aplikasi dibuka lagi. Kalau jadwal terlewat (aplikasi tertutup), langsung dijalankan.
+function maybeAutoCheck() {
+  if (!native || !settings.autoMin || checking || resumeBusy || !accounts.length) return;
+  const now = Date.now();
+  if (now < settings.lastAuto + settings.autoMin * 60000 || now < autoHoldUntil) return;
+  autoCheck();
+}
+
+async function autoCheck() {
+  autoHoldUntil = Date.now() + 60000;   // kalau ditunda (browser terbuka), coba lagi semenit kemudian
+  const ok = await runChecks(accounts.slice(), { auto: true });
+  if (ok) { settings.lastAuto = Date.now(); saveSettings(); updateAutoHint(); }
 }
 
 // Tombol Continue manual (untuk project sisa atau saat auto-continue belum jalan)
@@ -712,12 +864,16 @@ async function doContinue(a) {
     return;
   }
   const p = a.projects[0];
-  await openAccount(a, buildCommand(a, p), a.chatUrl);
+  // Browser membuka chat lalu menekan Continue / Try again. Kalau tombolnya tidak ada, command diketik dan dikirim.
+  // Command juga disalin ke clipboard sebagai cadangan.
+  await openAccount(a, p ? buildCommand(a, p) : OLD_CMD, a.chatUrl, true);
   a.projects.shift();
   if (a.status === 'working') freeUp(a);
+  // Matikan warna hijau sampai halaman melapor lagi
+  a.check = { state: 'idle', at: Date.now() };
   commit();
-  toast(`Command untuk "${p.name}" disalin. Tempel di chat.`
-    + (a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : ''));
+  toast(`Continue dikirim ke chat "${shortName(a.name)}". Kalau tidak terkirim, command sudah disalin: tempel di chat.`
+    + (a.projects.length ? ` Sisa ${a.projects.length} project, tekan Continue lagi.` : ''), 6000);
 }
 
 // ---------- Kartu akun ----------
@@ -758,7 +914,12 @@ function buildCard(a, index) {
     title: 'Hubungkan akun ke browser aplikasi', 'aria-label': 'Hubungkan akun',
     onclick: () => connectAccount(a),
   });
-  const r2 = el('div', { class: 'r2' }, r.go, r.note, link, chev);
+  r.chkBtn = el('button', {
+    type: 'button', class: 'link', text: '⟳',
+    title: 'Cek akun ini di belakang layar', 'aria-label': 'Cek akun ini',
+    onclick: () => checkOne(a),
+  });
+  const r2 = el('div', { class: 'r2' }, r.go, r.note, r.chkBtn, link, chev);
 
   // Baris 3: penanda note (tampil hanya jika note dipasang di akun ini)
   r.nchips = el('div', { class: 'nchips' });
@@ -797,11 +958,11 @@ function buildCard(a, index) {
     type: 'datetime-local',
     onchange: (e) => {
       if (!e.target.value) return;
-      a.resetAt = new Date(e.target.value).toISOString();
-      a.notified = false;
-      commit();
+      setResetManual(a, new Date(e.target.value).toISOString());
     },
   });
+  r.src = el('div', { class: 'hint2 srcline' });
+  r.useAuto = el('button', { type: 'button', class: 'chip', text: '↺ Pakai otomatis', onclick: () => useAutoReset(a) });
   r.cd = el('div', { class: 'cd' });
   r.full = el('div', { class: 'hint2' });
 
@@ -862,12 +1023,14 @@ function buildCard(a, index) {
     ),
     el('div', { class: 'field only-free' }, el('label', { text: 'Sisa token (%)' }), r.pct),
     el('div', { class: 'field only-working' },
-      el('label', { text: 'Limit reset pada (jam & tanggal)' }),
+      el('label', { text: 'Limit reset pada (otomatis dari chat, bisa diatur manual)' }),
       r.when,
       el('div', { class: 'chips' },
-        el('span', { class: 'hint2', text: 'Cepat atur:' }),
+        el('span', { class: 'hint2', text: 'Atur manual:' }),
         ...[1, 2, 3, 5].map((h) => el('button', { type: 'button', class: 'chip', text: `+${h} jam`, onclick: () => setResetIn(a, h) })),
+        r.useAuto,
       ),
+      r.src,
       r.cd, r.full,
     ),
     el('div', { class: 'field only-working proj' },
@@ -916,13 +1079,19 @@ function live(root, a) {
   root.classList.toggle('is-free', !v.working);
   root.classList.toggle('waiting', v.working && v.waiting);
   root.classList.toggle('busy', v.busy && !v.waiting);
-  root.classList.toggle('ready', v.can);
+  root.classList.toggle('ready', v.can && !v.resumable);
+  root.classList.toggle('resume', v.resumable);
   root.classList.toggle('has-pj', v.list.length > 0);
   r.go.disabled = !v.can;
   r.note.textContent = noteText(v);
+  const mine = checkingId === a.id;
+  r.chkBtn.disabled = checking;
+  r.chkBtn.textContent = mine ? '…' : '⟳';
+  root.classList.toggle('checking', mine);
 
   let pt = 'Idle', pc = 'idle';
-  if (v.waiting) { pt = v.list.length ? `Paused ${v.list.length}` : 'Paused'; pc = 'paused'; }
+  if (v.resumable) { pt = 'Resume'; pc = 'resume'; }
+  else if (v.waiting) { pt = v.list.length ? `Paused ${v.list.length}` : 'Paused'; pc = 'paused'; }
   else if (v.busy) { pt = 'Running'; pc = 'running'; }
   else if (v.list.length) { pt = `Ready ${v.list.length}`; pc = 'ready'; }
   r.prjV.textContent = pt;
@@ -943,7 +1112,7 @@ function refresh(root, a) {
   r.acctT.textContent = shortName(a.name);
   r.acct.title = a.name;
   r.rstK.textContent = working ? 'Reset' : 'Token';
-  r.rstV.textContent = working ? timeShort(a) : `${a.percent}%`;
+  r.rstV.textContent = working ? timeShort(a) + (a.resetSrc === 'manual' ? ' ✎' : '') : `${a.percent}%`;
   setVal(r.name, a.name);
   setVal(r.pct, String(a.percent));
   setVal(r.when, a.resetAt ? toLocalInput(a.resetAt) : '');
@@ -952,9 +1121,11 @@ function refresh(root, a) {
   setVal(r.email, a.email || '');
   r.chk.textContent = a.check
     ? `Dicek ${new Date(a.check.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${CHECK_LABEL[a.check.state] || CHECK_LABEL.unknown}`
-    : 'Belum pernah dicek. Tekan "Cek semua akun".';
+    : 'Belum pernah dicek. Tekan ⟳ di baris akun ini atau "Cek semua akun".';
   r.notesChk.checked = !!a.notesOn;
   r.full.textContent = a.resetAt ? `Reset: ${fmt.format(new Date(a.resetAt))}` : '';
+  r.src.textContent = resetSource(a);
+  r.useAuto.hidden = a.resetSrc !== 'manual';
   renderProjects(r, a);
   renderNotes(r, a);
   live(root, a);
@@ -998,6 +1169,8 @@ function tick() {
     if (root) live(root, a);
   }
   checkDue();
+  maybeAutoCheck();
+  updateAutoHint();
 }
 
 document.getElementById('addForm').addEventListener('submit', (e) => {
@@ -1016,11 +1189,12 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
 
 (async function init() {
   accounts = await loadAccounts();
+  await loadSettings();
   await initNotifications();
   initLimitWatcher();
   initTools();
   render();
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); refreshCodeBtn(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); maybeAutoCheck(); } });
 })();
