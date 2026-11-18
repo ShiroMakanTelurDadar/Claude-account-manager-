@@ -33,7 +33,15 @@ let autoHint = null;             // teks jadwal cek otomatis
 let autoHoldUntil = 0;           // ms: jeda sebelum cek otomatis dicoba lagi (mis. browser sedang terbuka)
 // Pilihan interval cek otomatis (menit). 0 = mati.
 const AUTO_OPTS = [[0, 'Mati'], [30, '30 menit'], [60, '1 jam'], [120, '2 jam'], [300, '5 jam']];
-const settings = { autoMin: 60, lastAuto: 0 };   // lastAuto = patokan jadwal cek otomatis berikutnya
+const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // lastAuto = patokan jadwal cek otomatis berikutnya
+
+// ---------- Fitur pancingan ----------
+// Tiap akun: chat baru -> kirim "." -> respon Claude dihentikan secepatnya -> catat limit / free di memori sementara.
+// Aktif tiap BAIT_INTERVAL (3 jam): begitu cek otomatis mau jalan dan sudah 3 jam sejak pancingan terakhir, cek itu didahului pancingan.
+const BAIT_INTERVAL = 3 * 3600 * 1000;
+const BAIT_TIMEOUT = 35000;      // ms: batas waktu satu langkah pancingan per akun
+let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
+let baitBtn = null;              // tombol ON / OFF pancingan
 
 const fmt = new Intl.DateTimeFormat('id-ID', {
   weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -75,10 +83,14 @@ async function loadSettings() {
     if (st && typeof st === 'object') {
       if (AUTO_OPTS.some(([m]) => m === st.autoMin)) settings.autoMin = st.autoMin;
       if (typeof st.lastAuto === 'number') settings.lastAuto = st.lastAuto;
+      if (typeof st.baitOn === 'boolean') settings.baitOn = st.baitOn;
+      if (typeof st.lastBait === 'number') settings.lastBait = st.lastBait;
     }
   } catch {}
   // Pemakaian pertama: hitungan jadwal mulai dari sekarang
   if (!settings.lastAuto) { settings.lastAuto = Date.now(); saveSettings(); }
+  // Pemakaian pertama: hitungan 3 jam pancingan mulai dari sekarang
+  if (!settings.lastBait) { settings.lastBait = Date.now(); saveSettings(); }
 }
 async function saveSettings() {
   const raw = JSON.stringify(settings);
@@ -651,10 +663,13 @@ function initTools() {
     autoSel.append(el('option', { value: String(m), text: m ? `Auto cek: ${label}` : 'Auto cek: Mati' }));
   }
   autoSel.value = String(settings.autoMin);
+  baitBtn = el('button', { type: 'button', class: 'tbtn', onclick: toggleBait });
+  updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
   const tools = el('div', { class: 'tools' },
     checkBtn,
     autoSel,
+    baitBtn,
     el('button', { type: 'button', class: 'tbtn', text: '⬇ Ekspor data', onclick: exportData }),
     el('button', { type: 'button', class: 'tbtn', text: '⬆ Impor data', onclick: importData }),
   );
@@ -868,6 +883,13 @@ function updateAutoHint() {
     const next = Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now());
     const hm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     t = `Cek otomatis berikutnya sekitar ${hm}.`;
+    if (settings.baitOn) {
+      const at = settings.lastBait + BAIT_INTERVAL;
+      const hm2 = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      t += at <= Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now())
+        ? ' Didahului pancingan.'
+        : ` Pancingan berikutnya sekitar ${hm2}.`;
+    }
   }
   if (autoHint.textContent !== t) autoHint.textContent = t;
 }
@@ -882,8 +904,142 @@ function maybeAutoCheck() {
 
 async function autoCheck() {
   autoHoldUntil = Date.now() + 60000;   // kalau ditunda (browser terbuka), coba lagi semenit kemudian
-  const ok = await runChecks(accounts.slice(), { auto: true });
-  if (ok) { settings.lastAuto = Date.now(); saveSettings(); updateAutoHint(); }
+  // Cek otomatis yang jalan sesudah 3 jam sejak pancingan terakhir didahului pancingan. Lalu hitungan 3 jam mulai dari nol.
+  const useBait = settings.baitOn && Date.now() - settings.lastBait >= BAIT_INTERVAL;
+  const ok = useBait
+    ? await runBaitCycle(accounts.slice(), { auto: true })
+    : await runChecks(accounts.slice(), { auto: true });
+  if (ok) {
+    settings.lastAuto = Date.now();
+    if (useBait) settings.lastBait = Date.now();
+    saveSettings();
+    updateAutoHint();
+  }
+}
+
+// ---------- Pancingan ----------
+function updateBaitBtn() {
+  if (!baitBtn) return;
+  baitBtn.textContent = `🎣 Pancingan: ${settings.baitOn ? 'ON' : 'OFF'}`;
+  baitBtn.classList.toggle('ok', settings.baitOn);
+}
+
+function toggleBait() {
+  settings.baitOn = !settings.baitOn;
+  if (settings.baitOn) settings.lastBait = Date.now();   // dari OFF ke ON: hitungan 3 jam mulai dari sekarang
+  saveSettings();
+  updateBaitBtn();
+  updateAutoHint();
+  toast(settings.baitOn
+    ? 'Pancingan ON. Jalan tiap 3 jam, mendahului cek otomatis.'
+    : 'Pancingan OFF. Cek otomatis berjalan seperti biasa.');
+}
+
+const BAIT_LABEL = { limit: 'limit', free: 'free', loggedout: 'belum login', fail: 'gagal' };
+
+// Pasang hasil pancingan ke akun: limit -> status Limit (+ jam reset dari teks), free -> limit dianggap selesai
+function applyBait(a, state, text) {
+  if (state === 'limit') {
+    const t = LIMIT_RE.test(text || '') ? text : `out of messages ${text || ''}`;
+    onLimitSeen(a.id, t, '', Date.now());
+    if (a.status !== 'working') {
+      // Teks limit tidak terbaca atau jam sudah lewat: tetap tandai Limit karena pancingan melihat status limit
+      a.status = 'working';
+      a.notified = false;
+      a.resetAt = new Date(Date.now() + 5 * 3600e3).toISOString();
+      a.resetSrc = 'default';
+      commit();
+    }
+  } else if (state === 'free' && a.status === 'working') {
+    markLimitOver(a, 'check');
+  }
+}
+
+// Satu sesi pancingan untuk semua akun, lalu pengecekan:
+//  1. Pancingan tiap akun (chat baru, kirim ".", Stop). Hasil dicatat di baitMemory.
+//  2. Tiap akun: buka chat pancingan, bandingkan dengan memori, tentukan limit / free, hapus chat pancingan.
+//  3. Kembali ke chat utama (link di banner) dan cek seperti biasa.
+// Mengembalikan true kalau selesai, false kalau tidak jalan atau ditunda.
+async function runBaitCycle(list, opts = {}) {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.bait || !G.check) return runChecks(list, opts);   // APK lama tanpa pancingan: cek biasa
+  if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
+  if (!list.length) return false;
+  checking = true;
+  updateAutoHint();
+  baitMemory = new Map();
+  const tally = {};
+  let aborted = '';
+  try {
+    // Tahap 1: pancingan semua akun
+    for (let i = 0; i < list.length && !aborted; i++) {
+      const a = list[i];
+      if (!accounts.includes(a)) continue;
+      checkingId = a.id;
+      setCheckBtn(`Pancing ${i + 1}/${list.length}...`);
+      refreshChecking();
+      let res;
+      try { res = await G.bait({ accountId: a.id, url: CLAUDE_URL, mode: 'send', timeoutMs: BAIT_TIMEOUT }); }
+      catch (e) { res = { state: 'fail' }; }
+      if (res.error) { aborted = res.error; break; }
+      baitMemory.set(a.id, {
+        state: res.state, text: res.text || '',
+        chatUrl: /^https:\/\/claude\.ai\/chat\//.test(res.url || '') ? res.url : '',
+        at: Date.now(), verified: false, deleted: false, mismatch: false,
+      });
+    }
+
+    // Tahap 2 dan 3: per akun, bandingkan lalu hapus chat pancingan, lalu cek chat utama
+    for (let i = 0; i < list.length && !aborted; i++) {
+      const a = list[i];
+      if (!accounts.includes(a)) continue;
+      const mem = baitMemory.get(a.id);
+      checkingId = a.id;
+      setCheckBtn(`Cek ${i + 1}/${list.length}...`);
+      refreshChecking();
+
+      let verdict = mem ? mem.state : 'fail';
+      let text = mem ? mem.text : '';
+      if (mem && mem.chatUrl) {
+        let vr;
+        try { vr = await G.bait({ accountId: a.id, url: mem.chatUrl, mode: 'verify', timeoutMs: BAIT_TIMEOUT }); }
+        catch (e) { vr = { state: 'fail' }; }
+        if (vr.error) { aborted = vr.error; break; }
+        if (vr.state === 'limit' || vr.state === 'free') {
+          mem.verified = true;
+          mem.deleted = !!vr.deleted;
+          mem.mismatch = vr.state !== mem.state;
+          verdict = vr.state;                    // isi chat pancingan jadi patokan
+          text = vr.text || mem.text;
+          mem.state = verdict;
+        }
+      }
+      if (verdict === 'limit' || verdict === 'free') applyBait(a, verdict, text);
+      tally[BAIT_LABEL[verdict] || verdict] = (tally[BAIT_LABEL[verdict] || verdict] || 0) + 1;
+
+      // Kembali ke chat utama dan cek seperti biasa
+      let res;
+      try { res = await G.check({ accountId: a.id, url: a.chatUrl || CLAUDE_URL, timeoutMs: CHECK_TIMEOUT }); }
+      catch (e) { res = { state: 'unknown' }; }
+      if (res.error) { aborted = res.error; break; }
+      applyCheck(a, res);
+    }
+  } finally {
+    checking = false;
+    checkingId = null;
+    setCheckBtn(null);
+    refreshChecking();
+    updateAutoHint();
+    baitMemory = new Map();   // memori sementara dihapus segera setelah dipakai pengecekan (juga kalau dibatalkan)
+  }
+  if (aborted) {
+    if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
+    return false;
+  }
+  if (!opts.auto || !document.hidden) {
+    toast('Pancingan + cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6500);
+  }
+  return true;
 }
 
 // Tombol Continue manual (untuk project sisa atau saat auto-continue belum jalan)
