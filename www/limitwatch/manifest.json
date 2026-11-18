@@ -5,7 +5,7 @@
   "browser_specific_settings": {
     "gecko": { "id": "limitwatch@app.local" }
   },
-  "permissions": ["nativeMessaging", "geckoViewAddons"],
+  "permissions": ["nativeMessaging", "geckoViewAddons", "https://claude.ai/*"],
   "background": { "scripts": ["background.js"] },
   "content_scripts": [
     {
