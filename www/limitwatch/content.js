@@ -178,6 +178,152 @@
     } catch (e) { /* abaikan */ } finally { cmdBusy = false; }
   }
 
+  // ---------- Pancingan ----------
+  // Dijalankan hanya di sesi latar belakang yang diminta aplikasi (loginHelp -> bait = 'send' atau 'verify').
+  //  send   : buka chat baru, ketik ".", kirim, tekan Stop secepat mungkin, lalu laporkan limit / free.
+  //  verify : buka lagi chat pancingan, baca apakah ada status limit di sana, lalu hapus chat itu.
+  let baitAsked = false;    // mode pancingan sudah ditanyakan ke aplikasi
+  let baitStarted = false;  // pancingan sudah mulai jalan di halaman ini
+
+  // Teks status limit yang sedang tampil di halaman ('' kalau tidak ada)
+  function limitText() {
+    const t = (document.body && document.body.innerText) || '';
+    let m = LIMIT_RE.exec(t);
+    if (m) return t.slice(Math.max(0, m.index - 20), m.index + m[0].length + 20);
+    m = POPUP_RE.exec(t);
+    if (m) return t.slice(m.index, m.index + 320);
+    return '';
+  }
+
+  function findStopButton() {
+    const btns = document.querySelectorAll('button, [role="button"]');
+    for (const b of btns) {
+      const label = (b.getAttribute('aria-label') || b.innerText || '').trim();
+      if (label && STOP_LABEL_RE.test(label) && visible(b)) return b;
+    }
+    return null;
+  }
+
+  async function waitFor(fn, ms, step) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() >= end) return null;
+      await sleep(step || 100);
+    }
+  }
+
+  function chatId() {
+    const m = /^\/chat\/([0-9a-f-]{8,})/i.exec(location.pathname);
+    return m ? m[1] : '';
+  }
+
+  function baitDone(mode, outcome, text, deleted) {
+    send({ type: 'baitResult', mode, outcome, text: text || '', url: location.href, deleted: !!deleted });
+  }
+
+  // Kirim "." ke chat baru, hentikan respon Claude secepat mungkin, tentukan limit atau free
+  async function baitSend() {
+    const box = await waitFor(() => pick('div[contenteditable="true"], textarea'), 20000, 150);
+    if (!box) { baitDone('send', isLoginPage() ? 'loggedout' : 'fail', ''); return; }
+    await sleep(600);   // beri waktu banner limit muncul
+    const pre = limitText();
+    if (pre) { baitDone('send', 'limit', pre); return; }   // sudah limit sebelum kirim
+
+    box.focus();
+    if (box.isContentEditable) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, '.');
+    } else {
+      fill(box, '.');
+    }
+    const btn = await waitFor(() => Array.from(document.querySelectorAll(SEND_SEL)).find((b) => visible(b) && !b.disabled), 3000, 50);
+    if (btn) btn.click();
+    else box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+
+    // Pindai cepat (30 ms): tombol Stop muncul = pesan diterima, langsung ditekan. Teks limit muncul = akun limit.
+    const sentAt = Date.now();
+    let lim = '';
+    let stopped = false;
+    for (let i = 0; Date.now() - sentAt < 4000; i++) {
+      const stop = findStopButton();
+      if (stop) { stop.click(); stopped = true; break; }
+      if (i % 5 === 0) { lim = limitText(); if (lim) break; }
+      await sleep(30);
+    }
+    if (!lim) {
+      await sleep(400);   // limit kadang tampil sesaat setelah Stop
+      lim = limitText();
+    }
+    if (lim) { baitDone('send', 'limit', lim); return; }
+    // Tunggu alamat chat baru (/chat/...) supaya bisa dibuka lagi dan dihapus nanti
+    await waitFor(() => chatId(), 2500, 100);
+    baitDone('send', stopped || chatId() ? 'free' : 'fail', '');
+  }
+
+  // Hapus chat lewat API claude.ai (cara utama)
+  async function deleteChatApi(id) {
+    try {
+      const res = await fetch('/api/organizations', { credentials: 'include' });
+      if (!res.ok) return false;
+      const orgs = await res.json();
+      for (const o of (Array.isArray(orgs) ? orgs : [])) {
+        if (!o || !o.uuid) continue;
+        const r = await fetch('/api/organizations/' + o.uuid + '/chat_conversations/' + id, { method: 'DELETE', credentials: 'include' });
+        if (r.ok || r.status === 204) return true;
+      }
+    } catch (e) { /* lanjut ke cara cadangan */ }
+    return false;
+  }
+
+  // Hapus chat lewat menu halaman (cadangan, bergantung pada tampilan claude.ai)
+  async function deleteChatUi(id) {
+    try {
+      const menu = Array.from(document.querySelectorAll('button')).find((b) =>
+        /chat options|more options|options|opsi/i.test(b.getAttribute('aria-label') || '') && visible(b));
+      if (!menu) return false;
+      menu.click();
+      await sleep(500);
+      const del = Array.from(document.querySelectorAll('[role="menuitem"], button')).find((b) =>
+        /^(delete|hapus)$/i.test((b.innerText || '').trim()) && visible(b));
+      if (!del) return false;
+      del.click();
+      await sleep(500);
+      const dels = Array.from(document.querySelectorAll('button')).filter((b) =>
+        /^(delete|hapus)$/i.test((b.innerText || '').trim()) && visible(b));
+      if (dels.length) dels[dels.length - 1].click();
+      await sleep(1200);
+      return chatId() !== id;
+    } catch (e) { return false; }
+  }
+
+  // Buka chat pancingan: baca status limit di dalamnya, lalu hapus chat
+  async function baitVerify() {
+    const ready = await waitFor(() => pick(COMPOSER_SEL) || limitText(), 20000, 150);
+    if (!ready) { baitDone('verify', isLoginPage() ? 'loggedout' : 'fail', ''); return; }
+    await sleep(1500);   // beri waktu banner limit muncul
+    const lim = limitText();
+    const id = chatId();
+    let deleted = false;
+    if (id) deleted = (await deleteChatApi(id)) || (await deleteChatUi(id));
+    baitDone('verify', lim ? 'limit' : 'free', lim, deleted);
+  }
+
+  async function baitAssist() {
+    if (baitStarted || baitAsked) return;
+    let help;
+    try { help = await browser.runtime.sendMessage({ type: 'loginHelp' }); } catch (e) { return; }
+    if (!help) return;   // ekstensi belum siap, tanya lagi pada pindaian berikutnya
+    baitAsked = true;
+    if (!help.bait) return;
+    baitStarted = true;
+    try {
+      if (help.bait === 'send') await baitSend();
+      else if (help.bait === 'verify') await baitVerify();
+    } catch (e) { baitDone(help.bait, 'fail', String(e)); }
+  }
+
   function report(state, text, url) {
     send({ type: 'pageState', state, text: text || '', url });
   }
@@ -185,6 +331,7 @@
   function scan() {
     const body = document.body;
     if (!body) return;
+    baitAssist();
     const t = body.innerText || '';
     const url = location.href;
 
