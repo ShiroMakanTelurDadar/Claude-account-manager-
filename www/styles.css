@@ -336,3 +336,43 @@ button { cursor: pointer; border: 0; background: none; }
 /* Tombol alat: cek akun dan kode Gmail */
 .tbtn:disabled { opacity: .5; }
 .tbtn.ok { color: #86efac; }
+
+/* Pilihan interval cek otomatis dan tombol cek per akun */
+.tsel {
+  width: auto; padding: 6px 28px 6px 12px; font-size: 12px; border-radius: 999px; color: var(--sky);
+  border: 1px solid var(--line); background-color: rgba(125, 211, 252, .05);
+  appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--sky) 50%), linear-gradient(135deg, var(--sky) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.tsel option { background: #0b1a2a; color: var(--text); }
+.autohint { margin: -4px 4px 12px; }
+.link:disabled { opacity: .45; cursor: default; }
+.acc.checking .link { animation: pulse 1s ease-in-out infinite; border-color: var(--cyan); }
+@keyframes pulse { 50% { opacity: .45; } }
+/* Keterangan di samping Continue boleh dua baris karena sekarang ada dua tombol kecil */
+.note { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; }
+
+/* Continue hijau: tombol Continue / Try again terdeteksi di chat Claude */
+.acc.resume { border-color: rgba(74, 222, 128, .65); animation: glowg 2.6s ease-in-out infinite; }
+@keyframes glowg {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0), 0 10px 30px -18px rgba(0, 0, 0, .9); }
+  50% { box-shadow: 0 0 26px -4px rgba(74, 222, 128, .45), 0 10px 30px -18px rgba(0, 0, 0, .9); }
+}
+.acc.resume .go {
+  background: linear-gradient(135deg, #bbf7d0 0%, #4ade80 50%, #22c55e 100%); color: #03140a;
+  box-shadow: 0 8px 22px -8px rgba(34, 197, 94, .75), inset 0 1px 0 rgba(255, 255, 255, .55);
+}
+.acc.resume .go::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, .65) 50%, transparent 70%);
+  transform: translateX(-120%); animation: sweep 2.4s ease-in-out infinite;
+}
+.acc.resume .note { color: #86efac; }
+.prj .v.resume { color: #86efac; text-shadow: 0 0 12px rgba(134, 239, 172, .5); }
+
+
+/* Asal waktu reset (otomatis / manual) */
+.srcline { line-height: 1.35; }
+.chip[hidden] { display: none; }
