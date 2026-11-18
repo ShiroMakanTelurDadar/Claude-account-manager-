@@ -144,7 +144,7 @@ button { cursor: pointer; border: 0; background: none; }
 
 .k { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
 .v { font-size: 15px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.rst { min-width: 62px; }
+.rst { min-width: 62px; cursor: pointer; }
 .is-working .rst .v { color: var(--amber); }
 .is-free .rst .v { color: var(--text); }
 .prj { min-width: 62px; }
