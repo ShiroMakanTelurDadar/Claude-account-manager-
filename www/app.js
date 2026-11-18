@@ -332,11 +332,11 @@ async function connectAccount(a) {
 }
 
 // ---------- Deteksi limit dari browser aplikasi ----------
-const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan/i;
+const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|hit your [^\n]{0,40}limit/i;
 
-// "until 4:00 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu (dihitung dari saat banner terlihat)
+// "until 4:00 PM", "resets at 2:50 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu (dihitung dari saat banner terlihat)
 function parseResetAt(text, ref = Date.now()) {
-  const m = /(?:until|hingga|sampai)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
+  const m = /(?:until|hingga|sampai|resets?(?:\s+at)?|reset pada)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
   if (!m) return null;
   let h = parseInt(m[1], 10);
   const min = parseInt(m[2], 10);
@@ -384,7 +384,7 @@ function onLimitSeen(accountId, text, url, evAt) {
   a.resetAt = (at || new Date(Date.now() + 5 * 3600e3)).toISOString();
   a.resetSrc = at ? 'auto' : 'default';
   commit();
-  toast(`Limit terdeteksi di "${a.name}". Status: Working, Pending Project sampai limit reset.`);
+  toast(`Limit terdeteksi di "${a.name}". Status: Limit, Pending Project sampai limit reset.`);
 }
 
 // Tandai limit sudah selesai sekarang. checkDue yang menjalankan auto-continue, satu akun pada satu waktu.
@@ -448,6 +448,37 @@ async function drainLimitEvents() {
     const res = await G.takePending();
     for (const it of (res.items || [])) onPageEvent(it);
   } catch {}
+}
+
+// ---------- Waktu reset manual (opsi kedua) ----------
+// Dipakai kalau jam reset yang terbaca aplikasi salah. Ketuk kolom "Reset" di baris akun.
+function openResetEditor(a) {
+  if (a.status !== 'working') { toast('Atur waktu reset hanya saat status Limit.'); return; }
+  const inp = el('input', { type: 'datetime-local' });
+  inp.value = toLocalInput(a.resetAt || new Date().toISOString());
+  const info = el('div', { class: 'hint2', text: resetSource(a) || 'Waktu reset belum diatur.' });
+  const save = () => {
+    if (!inp.value) { toast('Pilih tanggal dan jam dulu.'); return; }
+    const t = new Date(inp.value).getTime();
+    if (Number.isNaN(t)) { toast('Waktu tidak valid.'); return; }
+    closeModal();
+    setResetManual(a, new Date(t).toISOString());
+    toast(`Waktu reset manual: ${atShort(a.resetAt)}.`);
+  };
+  openModal(closeModal,
+    el('div', { class: 'mtitle', text: 'Waktu reset manual' }),
+    el('div', { class: 'hint2', text: 'Pakai kalau jam di aplikasi beda dengan jam di web Claude. Waktu manual dipertahankan sampai limit selesai atau kamu tekan "Pakai otomatis".' }),
+    inp,
+    info,
+    el('div', { class: 'chips' },
+      ...[1, 2, 3, 5].map((h) => el('button', { type: 'button', class: 'chip', text: `+${h} jam`, onclick: () => { closeModal(); setResetIn(a, h); } })),
+      a.resetSrc === 'manual' ? el('button', { type: 'button', class: 'chip', text: '↺ Pakai otomatis', onclick: () => { closeModal(); useAutoReset(a); } }) : null,
+    ),
+    el('div', { class: 'mact' },
+      el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Simpan', onclick: save }),
+    ),
+  );
 }
 
 // ---------- Note ----------
@@ -737,7 +768,7 @@ function applyCheck(a, res) {
   if (/^https:\/\/claude\.ai\/chat\//.test(res.url || '') && !a.chatUrl) a.chatUrl = res.url;
 
   if (state === 'limit') {
-    onLimitSeen(a.id, res.text, res.url, at);          // set Working + jam reset dari banner
+    onLimitSeen(a.id, res.text, res.url, at);          // set Limit + jam reset dari banner / popup
   } else if (state === 'reset') {
     if (a.status === 'working') markLimitOver(a, 'page');
   } else if (state === 'idle' && a.status === 'working' && a.resetAt && Date.parse(a.resetAt) > at) {
@@ -882,7 +913,7 @@ function buildCard(a, index) {
 
   // Baris 1: status | akun | waktu reset | status proyek
   r.sw = el('input', {
-    type: 'checkbox', 'aria-label': 'Free atau Working',
+    type: 'checkbox', 'aria-label': 'Free atau Limit',
     onchange: (e) => setStatus(a, e.target.checked ? 'working' : 'free'),
   });
   r.stlabel = el('span', { class: 'stlabel' });
@@ -900,7 +931,7 @@ function buildCard(a, index) {
   const r1 = el('div', { class: 'r1' },
     el('label', { class: 'col stat' }, el('span', { class: 'sw' }, r.sw, el('i')), r.stlabel),
     r.acct,
-    el('div', { class: 'col rst' }, r.rstK, r.rstV),
+    el('div', { class: 'col rst', role: 'button', tabindex: '0', title: 'Ketuk untuk atur waktu reset manual', onclick: () => openResetEditor(a) }, r.rstK, r.rstV),
     el('div', { class: 'col prj' }, r.prjK, r.prjV),
   );
 
@@ -1108,7 +1139,7 @@ function refresh(root, a) {
   root.classList.toggle('open', openIds.has(a.id));
   root.classList.toggle('notes-on', !!a.notesOn);
   r.sw.checked = working;
-  r.stlabel.textContent = working ? 'Working' : 'Free';
+  r.stlabel.textContent = working ? 'Limit' : 'Free';
   r.acctT.textContent = shortName(a.name);
   r.acct.title = a.name;
   r.rstK.textContent = working ? 'Reset' : 'Token';
@@ -1159,7 +1190,7 @@ function render() {
   document.getElementById('summary').replaceChildren(
     el('span', { class: 'pill', text: `${accounts.length} akun` }),
     el('span', { class: 'pill free', text: `${free} Free` }),
-    el('span', { class: 'pill work', text: `${accounts.length - free} Working` }),
+    el('span', { class: 'pill work', text: `${accounts.length - free} Limit` }),
   );
 }
 
