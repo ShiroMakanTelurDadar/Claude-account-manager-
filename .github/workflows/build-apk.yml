@@ -56,9 +56,15 @@ jobs:
           sed -i "0,/defaultConfig {/s//defaultConfig {\n        ndk { abiFilters 'arm64-v8a' }/" app/build.gradle
           sed -i "0,/^dependencies {/s//dependencies {\n    implementation 'org.mozilla.geckoview:geckoview-arm64-v8a:$GV'/" app/build.gradle
 
+          # Kecilkan APK: library native (libxul.so, ~130 MB) dikompres di dalam APK, bukan disimpan mentah.
+          # Tanpa ini AGP 8 menyimpannya tanpa kompresi sehingga APK membengkak sampai ~300 MB.
+          sed -i "0,/^android {/s//android {\n    packagingOptions {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }/" app/build.gradle
+          # Buang bahasa resource yang tidak dipakai dari library pihak ketiga
+          sed -i "0,/defaultConfig {/s//defaultConfig {\n        resConfigs 'en', 'id'/" app/build.gradle
+
           mkdir -p app/src/main/java/com/local/claudeaccountmanager
           cp ../native/MainActivity.java app/src/main/java/com/local/claudeaccountmanager/MainActivity.java
-          grep -n "geckoview\|abiFilters" app/build.gradle
+          grep -n "geckoview\|abiFilters\|useLegacyPackaging\|resConfigs" app/build.gradle
 
       - name: Pasang kunci debug tetap
         env:
@@ -77,6 +83,9 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Ukuran APK
+        run: ls -lh android/app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
