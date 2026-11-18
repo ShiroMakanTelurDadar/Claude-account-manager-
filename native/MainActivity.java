@@ -115,6 +115,25 @@ public class MainActivity extends BridgeActivity {
                     });
         }
 
+        // Pancingan satu akun di sesi tersembunyi.
+        // mode "send"  : buka chat baru, kirim ".", hentikan respon secepatnya, laporkan limit / free
+        // mode "verify": buka chat pancingan (url), baca status limit di dalamnya, lalu hapus chat itu
+        @PluginMethod
+        public void bait(final PluginCall call) {
+            final String accountId = call.getString("accountId", "default");
+            final String url = call.getString("url", "https://claude.ai/new");
+            final String mode = "verify".equals(call.getString("mode", "send")) ? "verify" : "send";
+            Integer t = call.getInt("timeoutMs", 35000);
+            final int timeout = t == null ? 35000 : t;
+            GeckoActivity.runBait(getContext().getApplicationContext(), accountId, url, mode, timeout,
+                    new CheckCallback() {
+                        @Override
+                        public void done(JSObject res) {
+                            call.resolve(res);
+                        }
+                    });
+        }
+
         // Mengambil dan mengosongkan antrean laporan halaman
         @PluginMethod
         public void takePending(PluginCall call) {
@@ -158,6 +177,30 @@ public class MainActivity extends BridgeActivity {
         private static String sCheckUrl = "";
         private static long sCheckStateAt = 0;
 
+        // Pancingan: mode sesi tersembunyi ("send" / "verify" / "") dan hasil yang dilaporkan halaman
+        private static volatile String sBaitMode = "";
+        private static boolean sBaitDone = false;
+        private static String sBaitOutcome = "";
+        private static String sBaitText = "";
+        private static String sBaitUrl = "";
+        private static boolean sBaitDeleted = false;
+
+        private static synchronized void resetBait() {
+            sBaitDone = false;
+            sBaitOutcome = "";
+            sBaitText = "";
+            sBaitUrl = "";
+            sBaitDeleted = false;
+        }
+
+        private static synchronized void recordBait(String outcome, String text, String url, boolean deleted) {
+            sBaitOutcome = outcome;
+            sBaitText = text;
+            sBaitUrl = url;
+            sBaitDeleted = deleted;
+            sBaitDone = true;
+        }
+
         private static synchronized void resetCheck() {
             sCheckState = "";
             sCheckText = "";
@@ -192,10 +235,19 @@ public class MainActivity extends BridgeActivity {
                                     o.put("email", sCheckAccountId == null ? sCurrentEmail : "");
                                     boolean cmdFresh = System.currentTimeMillis() - sPendingCommandAt < 180000L;
                                     o.put("command", sCheckAccountId == null && cmdFresh ? sPendingCommand : "");
+                                    // Mode pancingan hanya berlaku di sesi latar belakang
+                                    o.put("bait", sCheckAccountId == null ? "" : sBaitMode);
                                     out = new GeckoResult<>();
                                     out.complete(o);
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
+                                } else if ("baitResult".equals(type)) {
+                                    if (sCheckAccountId != null && !sBaitMode.isEmpty()) {
+                                        recordBait(msg.optString("outcome", "fail"),
+                                                msg.optString("text", ""),
+                                                msg.optString("url", ""),
+                                                msg.optBoolean("deleted", false));
+                                    }
                                 } else {
                                     String state = msg.optString("state", "limit");
                                     String text = msg.optString("text", "");
@@ -296,6 +348,75 @@ public class MainActivity extends BridgeActivity {
                             }
                         }
                     }, 2000);
+                }
+            });
+        }
+
+        // Pancingan satu akun di sesi tersembunyi. Memakai kunci yang sama dengan runCheck (satu sesi latar belakang pada satu waktu).
+        // Sesi ditutup segera setelah halaman melapor, jadi respon Claude tidak sempat berjalan.
+        static void runBait(final Context ctx, final String accountId, final String url,
+                            final String mode, final int timeoutMs, final CheckCallback cb) {
+            final Handler h = new Handler(Looper.getMainLooper());
+            h.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (sCheckRunning) {
+                        JSObject busy = new JSObject();
+                        busy.put("state", "fail");
+                        busy.put("error", "busy");
+                        cb.done(busy);
+                        return;
+                    }
+                    sCheckRunning = true;
+                    resetCheck();
+                    resetBait();
+                    sCheckAccountId = accountId;
+                    sBaitMode = mode;
+                    if (sRuntime == null) sRuntime = GeckoRuntime.create(ctx);
+
+                    GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
+                            .contextId(accountId)
+                            .build();
+                    final GeckoSession s = new GeckoSession(settings);
+                    s.open(sRuntime);
+                    s.setActive(true);
+                    withExtension(new Runnable() {
+                        @Override
+                        public void run() {
+                            s.loadUri(url);
+                        }
+                    });
+
+                    final long start = SystemClock.uptimeMillis();
+                    h.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            long now = SystemClock.uptimeMillis();
+                            boolean done;
+                            synchronized (GeckoActivity.class) {
+                                done = sBaitDone;
+                            }
+                            if (done || now - start > timeoutMs) {
+                                JSObject r = new JSObject();
+                                synchronized (GeckoActivity.class) {
+                                    r.put("state", sBaitDone ? sBaitOutcome : "fail");
+                                    r.put("text", sBaitText);
+                                    r.put("url", sBaitUrl);
+                                    r.put("deleted", sBaitDeleted);
+                                }
+                                try {
+                                    s.close();
+                                } catch (Exception ignored) {
+                                }
+                                sBaitMode = "";
+                                sCheckAccountId = null;
+                                sCheckRunning = false;
+                                cb.done(r);
+                            } else {
+                                h.postDelayed(this, 100);
+                            }
+                        }
+                    }, 1000);
                 }
             });
         }
