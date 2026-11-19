@@ -4,6 +4,8 @@ const CLAUDE_URL = 'https://claude.ai/new';
 const LOGIN_URL = 'https://claude.ai/login';
 const STORE_KEY = 'accounts';
 const SETTINGS_KEY = 'settings';
+const HISTORY_KEY = 'history';
+const HISTORY_MAX = 100;         // jumlah riwayat yang disimpan (yang paling lama dibuang)
 
 const Cap = window.Capacitor || {};
 const P = Cap.Plugins || {};
@@ -21,7 +23,7 @@ const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat be
 const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
 const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
-const CHECK_TIMEOUT = 24000;     // ms: batas waktu cek satu akun di belakang layar
+const CHECK_TIMEOUT = 24000;     // ms: batas waktu cek satu akun di belakang layar (dihitung sesudah halaman di-refresh; muat awal + refresh menambah sekitar 5-15 detik)
 const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
@@ -92,6 +94,39 @@ async function loadSettings() {
   if (!settings.lastAuto) { settings.lastAuto = Date.now(); saveSettings(); }
   // lastBait = 0 (belum pernah memancing): cek otomatis menunggu sampai tombol 🎣 menyelesaikan satu sesi
 }
+// ---------- Riwayat pancingan & pengecekan ----------
+// Tiap item: {id, at (ms), kind: 'check' | 'bait', ok (true = berhasil dijalankan), detail}
+let histLog = [];
+let histDrawer = null;           // elemen slide riwayat
+let histBackdrop = null;
+let histListEl = null;
+
+async function loadHistory() {
+  try {
+    const raw = native && P.Preferences
+      ? (await P.Preferences.get({ key: HISTORY_KEY })).value
+      : localStorage.getItem(HISTORY_KEY);
+    const list = JSON.parse(raw || '[]');
+    histLog = Array.isArray(list)
+      ? list.filter((h) => h && typeof h.at === 'number' && (h.kind === 'check' || h.kind === 'bait')).slice(0, HISTORY_MAX)
+      : [];
+  } catch { histLog = []; }
+}
+async function saveHistory() {
+  const raw = JSON.stringify(histLog);
+  try {
+    if (native && P.Preferences) await P.Preferences.set({ key: HISTORY_KEY, value: raw });
+    else localStorage.setItem(HISTORY_KEY, raw);
+  } catch {}
+}
+function addHistory(kind, ok, detail, at) {
+  histLog.unshift({ id: uid(), at: at || Date.now(), kind, ok: !!ok, detail: detail || '' });
+  histLog.sort((x, y) => y.at - x.at);
+  if (histLog.length > HISTORY_MAX) histLog.length = HISTORY_MAX;
+  saveHistory();
+  renderHistory();
+}
+
 async function saveSettings() {
   const raw = JSON.stringify(settings);
   try {
@@ -224,6 +259,10 @@ const CHECK_LABEL = {
   limit: 'limit aktif', busy: 'sedang bekerja', reset: 'limit sudah selesai',
   resume: 'bisa dilanjutkan (Continue / Try again)', idle: 'tidak ada project berjalan', loggedout: 'belum login', unknown: 'tidak terbaca',
 };
+
+function abortReason(code) {
+  return code === 'browser' ? 'gagal: browser aplikasi sedang terbuka' : 'gagal: pengecekan lain masih berjalan';
+}
 
 // Catat status terakhir yang terlihat di halaman akun (dari browser maupun dari cek latar belakang).
 // Laporan yang lebih tua dari yang tercatat diabaikan.
@@ -654,6 +693,66 @@ function importData() {
   area.focus();
 }
 
+// ---------- Slide riwayat (dari kiri, kurang dari setengah layar) ----------
+function fmtHistTime(ms) {
+  const d = new Date(ms);
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} · ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function renderHistory() {
+  if (!histListEl) return;
+  if (!histLog.length) {
+    histListEl.replaceChildren(el('p', { class: 'hint2 hempty', text: 'Belum ada riwayat. Riwayat muncul setelah pancingan atau pengecekan dijalankan.' }));
+    return;
+  }
+  histListEl.replaceChildren(...histLog.map((h) => el('div', { class: `hitem ${h.ok ? 'ok' : 'bad'}` },
+    el('div', { class: 'hrow' },
+      el('span', { class: 'hkind', text: h.kind === 'bait' ? '🎣 Pancingan' : '⟳ Pengecekan' }),
+      el('span', { class: 'hbadge', text: h.ok ? 'Berhasil' : 'Gagal' }),
+    ),
+    el('div', { class: 'htime', text: fmtHistTime(h.at) }),
+    h.detail ? el('div', { class: 'hdet', text: h.detail }) : null,
+  )));
+}
+
+function initHistory() {
+  histBackdrop = el('div', { class: 'hbackdrop', onclick: closeHistory });
+  histListEl = el('div', { class: 'hlist' });
+  histDrawer = el('aside', { class: 'hdrawer', 'aria-label': 'Riwayat', 'aria-hidden': 'true' },
+    el('div', { class: 'hhead' },
+      el('span', { class: 'htitle', text: 'Riwayat' }),
+      el('button', { type: 'button', class: 'hx', text: '✕', 'aria-label': 'Tutup riwayat', onclick: closeHistory }),
+    ),
+    histListEl,
+    el('button', {
+      type: 'button', class: 'btn-g hclear', text: 'Hapus riwayat',
+      onclick: () => {
+        if (!histLog.length || !confirm('Hapus semua riwayat?')) return;
+        histLog = [];
+        saveHistory();
+        renderHistory();
+      },
+    }),
+  );
+  document.body.append(histBackdrop, histDrawer);
+  renderHistory();
+}
+
+function openHistory() {
+  if (!histDrawer) return;
+  renderHistory();
+  histBackdrop.classList.add('show');
+  histDrawer.classList.add('open');
+  histDrawer.setAttribute('aria-hidden', 'false');
+}
+
+function closeHistory() {
+  if (!histDrawer) return;
+  histBackdrop.classList.remove('show');
+  histDrawer.classList.remove('open');
+  histDrawer.setAttribute('aria-hidden', 'true');
+}
+
 function initTools() {
   const s = document.getElementById('summary');
   if (!s) return;
@@ -668,6 +767,7 @@ function initTools() {
   updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
   const tools = el('div', { class: 'tools' },
+    el('button', { type: 'button', class: 'tbtn', text: '🕘 Riwayat', 'aria-label': 'Buka riwayat', onclick: openHistory }),
     checkBtn,
     autoSel,
     baitRunBtn,
@@ -823,6 +923,8 @@ async function runChecks(list, opts = {}) {
   const tally = {};
   let aborted = '';
   let lastLabel = '';
+  const startedAt = Date.now();
+  let known = 0;   // jumlah akun yang halamannya terbaca (bukan "tidak terbaca")
   try {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
@@ -837,6 +939,7 @@ async function runChecks(list, opts = {}) {
       // Ada browser terbuka atau cek lain berjalan: hentikan, jangan timpa status akun dengan "tidak terbaca"
       if (res.error) { aborted = res.error; break; }
       applyCheck(a, res);
+      if (res.state && res.state !== 'unknown') known++;
       lastLabel = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
       tally[lastLabel] = (tally[lastLabel] || 0) + 1;
     }
@@ -846,6 +949,15 @@ async function runChecks(list, opts = {}) {
     setCheckBtn(null);
     refreshChecking();
     updateAutoHint();
+  }
+  {
+    const who = opts.auto ? 'Otomatis' : 'Manual';
+    const sum = list.length === 1
+      ? `${shortName(list[0].name)}: ${lastLabel || CHECK_LABEL.unknown}`
+      : Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ');
+    addHistory('check', !aborted && known > 0,
+      aborted ? `${who} · ${abortReason(aborted)}${sum ? ` (${sum})` : ''}`
+        : `${who} · ${sum || 'tidak ada hasil'}`, startedAt);
   }
   if (aborted) {
     if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
@@ -979,7 +1091,13 @@ async function runBaitCycle(list, opts = {}) {
   baitMemory = new Map();
   const tally = {};
   let aborted = '';
+  let abortedAt = '';   // 'bait' atau 'check': tahap tempat pembatalan terjadi
   let usable = 0;   // jumlah akun yang pancingannya menghasilkan limit / free
+  const baitStartedAt = Date.now();
+  let checkStartedAt = 0;
+  let checkDone = 0;
+  let checkKnown = 0;
+  const checkTally = {};
   try {
     // Tahap 1: pancingan semua akun
     for (let i = 0; i < list.length && !aborted; i++) {
@@ -991,7 +1109,7 @@ async function runBaitCycle(list, opts = {}) {
       let res;
       try { res = await G.bait({ accountId: a.id, url: CLAUDE_URL, mode: 'send', timeoutMs: BAIT_TIMEOUT }); }
       catch (e) { res = { state: 'fail' }; }
-      if (res.error) { aborted = res.error; break; }
+      if (res.error) { aborted = res.error; abortedAt = 'bait'; break; }
       baitMemory.set(a.id, {
         state: res.state, text: res.text || '',
         chatUrl: /^https:\/\/claude\.ai\/chat\//.test(res.url || '') ? res.url : '',
@@ -1014,7 +1132,7 @@ async function runBaitCycle(list, opts = {}) {
         let vr;
         try { vr = await G.bait({ accountId: a.id, url: mem.chatUrl, mode: 'verify', timeoutMs: BAIT_TIMEOUT }); }
         catch (e) { vr = { state: 'fail' }; }
-        if (vr.error) { aborted = vr.error; break; }
+        if (vr.error) { aborted = vr.error; abortedAt = 'bait'; break; }
         if (vr.state === 'limit' || vr.state === 'free') {
           mem.verified = true;
           mem.deleted = !!vr.deleted;
@@ -1028,11 +1146,16 @@ async function runBaitCycle(list, opts = {}) {
       tally[BAIT_LABEL[verdict] || verdict] = (tally[BAIT_LABEL[verdict] || verdict] || 0) + 1;
 
       // Kembali ke chat utama dan cek seperti biasa
+      if (!checkStartedAt) checkStartedAt = Date.now();
       let res;
       try { res = await G.check({ accountId: a.id, url: a.chatUrl || CLAUDE_URL, timeoutMs: CHECK_TIMEOUT }); }
       catch (e) { res = { state: 'unknown' }; }
-      if (res.error) { aborted = res.error; break; }
+      if (res.error) { aborted = res.error; abortedAt = 'check'; break; }
       applyCheck(a, res);
+      checkDone++;
+      if (res.state && res.state !== 'unknown') checkKnown++;
+      const cl = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
+      checkTally[cl] = (checkTally[cl] || 0) + 1;
     }
   } finally {
     checking = false;
@@ -1041,6 +1164,22 @@ async function runBaitCycle(list, opts = {}) {
     refreshChecking();
     updateAutoHint();
     baitMemory = new Map();   // memori sementara dihapus segera setelah dipakai pengecekan (juga kalau dibatalkan)
+  }
+  {
+    const who = opts.auto ? 'Otomatis' : 'Manual';
+    const baitSum = Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ');
+    const baitFail = abortedAt === 'bait';
+    addHistory('bait', !baitFail && usable > 0,
+      baitFail ? `${who} · ${abortReason(aborted)}${baitSum ? ` (${baitSum})` : ''}`
+        : usable > 0 ? `${who} · ${baitSum}`
+        : `${who} · tidak ada akun yang terpancing (${baitSum || 'belum login / gagal'})`, baitStartedAt);
+    if (checkDone > 0 || abortedAt === 'check') {
+      const chkSum = Object.entries(checkTally).map(([k, n]) => `${n} ${k}`).join(', ');
+      const chkFail = abortedAt === 'check';
+      addHistory('check', !chkFail && checkKnown > 0,
+        chkFail ? `${who} · ${abortReason(aborted)}${chkSum ? ` (${chkSum})` : ''}` : `${who} · ${chkSum}`,
+        checkStartedAt || Date.now());
+    }
   }
   if (aborted) {
     if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
@@ -1389,9 +1528,11 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
 (async function init() {
   accounts = await loadAccounts();
   await loadSettings();
+  await loadHistory();
   await initNotifications();
   initLimitWatcher();
   initTools();
+  initHistory();
   render();
   scheduleAll();
   setInterval(tick, 1000);
