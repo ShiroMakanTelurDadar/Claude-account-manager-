@@ -122,10 +122,13 @@ public class MainActivity extends BridgeActivity {
         public void bait(final PluginCall call) {
             final String accountId = call.getString("accountId", "default");
             final String url = call.getString("url", "https://claude.ai/new");
-            final String mode = "verify".equals(call.getString("mode", "send")) ? "verify" : "send";
+            final String rawMode = call.getString("mode", "send");
+            final String mode = "verify".equals(rawMode) ? "verify" : "continue".equals(rawMode) ? "continue" : "send";
+            // mode "continue": kirim Continue / command ke chat akun di sesi tersembunyi (tanpa membuka browser)
+            final String command = call.getString("command", "");
             Integer t = call.getInt("timeoutMs", 35000);
             final int timeout = t == null ? 35000 : t;
-            GeckoActivity.runBait(getContext().getApplicationContext(), accountId, url, mode, timeout,
+            GeckoActivity.runBait(getContext().getApplicationContext(), accountId, url, mode, command, timeout,
                     new CheckCallback() {
                         @Override
                         public void done(JSObject res) {
@@ -179,6 +182,7 @@ public class MainActivity extends BridgeActivity {
 
         // Pancingan: mode sesi tersembunyi ("send" / "verify" / "") dan hasil yang dilaporkan halaman
         private static volatile String sBaitMode = "";
+        private static volatile String sBaitCmd = "";   // command yang dikirim di mode "continue"
         private static boolean sBaitDone = false;
         private static String sBaitOutcome = "";
         private static String sBaitText = "";
@@ -306,6 +310,7 @@ public class MainActivity extends BridgeActivity {
                                     o.put("bait", sCheckAccountId == null || !sReady ? "" : sBaitMode);
                                     // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
                                     o.put("wait", sCheckAccountId != null && !sReady);
+                                    o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
                                     out = new GeckoResult<>();
                                     out.complete(o);
                                 } else if ("commandDone".equals(type)) {
@@ -428,7 +433,7 @@ public class MainActivity extends BridgeActivity {
         // Pancingan satu akun di sesi tersembunyi. Memakai kunci yang sama dengan runCheck (satu sesi latar belakang pada satu waktu).
         // Sesi ditutup segera setelah halaman melapor, jadi respon Claude tidak sempat berjalan.
         static void runBait(final Context ctx, final String accountId, final String url,
-                            final String mode, final int timeoutMs, final CheckCallback cb) {
+                            final String mode, final String command, final int timeoutMs, final CheckCallback cb) {
             final Handler h = new Handler(Looper.getMainLooper());
             h.post(new Runnable() {
                 @Override
@@ -445,14 +450,15 @@ public class MainActivity extends BridgeActivity {
                     resetBait();
                     sCheckAccountId = accountId;
                     sBaitMode = mode;
+                    sBaitCmd = command == null ? "" : command;
                     if (sRuntime == null) sRuntime = GeckoRuntime.create(ctx);
 
                     GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
-                    // verify: chat pancingan di-refresh dulu sebelum dibaca dan dihapus. send: chat baru, tidak perlu.
-                    setupSession(s, h, "verify".equals(mode));
+                    // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
+                    setupSession(s, h, !"send".equals(mode));
                     s.open(sRuntime);
                     s.setActive(true);
                     withExtension(new Runnable() {
@@ -477,7 +483,7 @@ public class MainActivity extends BridgeActivity {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sBaitDone ? sBaitOutcome : "fail");
-                                    r.put("text", sBaitText);
+                                    r.put("text", sBaitDone ? sBaitText : "why:timeout");
                                     r.put("url", sBaitUrl);
                                     r.put("deleted", sBaitDeleted);
                                 }
@@ -486,6 +492,7 @@ public class MainActivity extends BridgeActivity {
                                 } catch (Exception ignored) {
                                 }
                                 sBaitMode = "";
+                                sBaitCmd = "";
                                 sCheckAccountId = null;
                                 sCheckRunning = false;
                                 cb.done(r);
