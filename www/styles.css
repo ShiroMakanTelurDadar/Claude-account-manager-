@@ -470,12 +470,8 @@ header { flex-direction: row; align-items: center; gap: 12px; margin: 0 4px 12px
 .tbtn.sq { width: 44px; padding: 0; font-size: 17px; }
 .autohint { margin: 0 6px 12px; }
 
-/* Kolom kedua baris akun: pemakaian / dicek */
-.is-free .rst .v.lo { color: #86efac; }
-.is-free .rst .v.mid { color: var(--amber); }
-.is-free .rst .v.hi { color: #f87171; }
+/* Kolom kedua baris akun: kapan terakhir dicek */
 .is-free .rst .v.stale { color: var(--muted); }
-.usageline { margin: 2px 0 0; }
 .tsel.quick { width: auto; padding: 5px 26px 5px 10px; }
 
 /* NOTE: satu tulisan berwarna di bawah nama akun (penanda sekaligus catatan) */
