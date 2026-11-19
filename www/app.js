@@ -659,31 +659,73 @@ function openMemo(a) {
 }
 
 // ---------- Backup data ----------
-// Ekspor: semua akun, setelan, link chat, dan note jadi satu teks JSON untuk disalin
+// Dua cara: teks (salin / tempel) atau file (.json di folder Download).
+const stamp = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+};
+
+// Simpan teks sebagai file. Di aplikasi lewat plugin native (folder Download), di browser lewat unduhan biasa.
+async function saveBackupFile(json) {
+  const name = `claude-account-manager-${stamp()}.json`;
+  const G = P.GeckoBrowser;
+  if (native && G && G.saveFile) {
+    try {
+      const res = await G.saveFile({ name, content: json, mime: 'application/json' });
+      toast(`Backup disimpan: ${res.where || name}`, 7000);
+      return;
+    } catch (e) {
+      toast(`Gagal menyimpan file (${(e && e.message) || 'error'}). Pakai Salin teks.`, 6000);
+      return;
+    }
+  }
+  try {
+    const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    const link = el('a', { href: url, download: name });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast(`Backup diunduh: ${name}`, 6000);
+  } catch { toast('Gagal menyimpan file. Pakai Salin teks.', 5000); }
+}
+
+// Ekspor: semua akun, setelan, link chat, dan note
 function exportData() {
   const json = JSON.stringify({ v: 1, accounts });
   const area = el('textarea', { class: 'nedit', readonly: true });
   area.value = json;
-  area.style.minHeight = '30vh';
+  area.style.minHeight = '26vh';
   area.addEventListener('focus', () => area.select());
   openModal(closeModal,
     el('div', { class: 'mtitle', text: 'Ekspor data' }),
-    el('div', { class: 'hint2', text: 'Salin teks ini dan simpan di tempat aman (catatan atau chat pribadi). Isinya termasuk link chat dan catatan.' }),
+    el('div', { class: 'hint2', text: 'Pilih salah satu: simpan sebagai file, atau salin teksnya dan simpan di tempat aman. Isinya termasuk link chat dan catatan.' }),
     area,
     el('div', { class: 'mact' },
       el('button', { type: 'button', class: 'btn-g', text: 'Tutup', onclick: closeModal }),
       el('button', {
-        type: 'button', class: 'btn sm', text: 'Salin',
+        type: 'button', class: 'btn-g', text: 'Salin teks',
         onclick: async () => { await copyText(json); toast('Backup disalin ke clipboard.'); },
       }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Simpan file', onclick: () => saveBackupFile(json) }),
     ),
   );
 }
 
-// Impor: tempel teks backup. Akun dengan id sama diperbarui, yang baru ditambahkan.
+// Impor: dari teks yang ditempel atau dari file. Akun dengan id sama diperbarui, yang baru ditambahkan.
 function importData() {
-  const area = el('textarea', { class: 'nedit', placeholder: 'Tempel isi backup di sini...' });
-  area.style.minHeight = '30vh';
+  const area = el('textarea', { class: 'nedit', placeholder: 'Tempel isi backup di sini, atau pilih file...' });
+  area.style.minHeight = '26vh';
+  const picker = el('input', { type: 'file', accept: '.json,application/json,text/plain', hidden: true });
+  picker.addEventListener('change', () => {
+    const f = picker.files && picker.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => { area.value = String(rd.result || ''); toast(`File "${f.name}" dibaca. Tekan Pulihkan.`, 4000); };
+    rd.onerror = () => toast('File tidak bisa dibaca.');
+    rd.readAsText(f);
+    picker.value = '';
+  });
   const run = () => {
     let data;
     try { data = JSON.parse(area.value.trim()); } catch { toast('Teks backup tidak valid.'); return; }
@@ -711,10 +753,12 @@ function importData() {
   };
   openModal(closeModal,
     el('div', { class: 'mtitle', text: 'Impor data' }),
-    el('div', { class: 'hint2', text: 'Tempel teks hasil Ekspor data. Akun yang sudah ada diperbarui, akun baru ditambahkan.' }),
+    el('div', { class: 'hint2', text: 'Tempel teks hasil Ekspor data, atau pilih file backup (.json). Akun yang sudah ada diperbarui, akun baru ditambahkan.' }),
     area,
+    picker,
     el('div', { class: 'mact' },
       el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
+      el('button', { type: 'button', class: 'btn-g', text: 'Pilih file', onclick: () => picker.click() }),
       el('button', { type: 'button', class: 'btn sm', text: 'Pulihkan', onclick: run }),
     ),
   );
@@ -806,43 +850,15 @@ function initTools() {
   updateAutoHint();
 }
 
-// ---------- Data pemakaian akun (dari claude.ai, sama dengan Settings > Usage) ----------
-// raw: JSON {five_hour:{utilization, resets_at}, seven_day:{...}} atau 'none' (akun tidak punya data ini)
-function parseUsage(raw) {
-  if (!raw || raw === 'none') return null;
-  let j;
-  try { j = JSON.parse(raw); } catch { return null; }
-  const pick = (b) => (b && typeof b.utilization === 'number'
-    ? { pct: Math.max(0, Math.min(100, b.utilization)), resetsAt: b.resets_at && !Number.isNaN(Date.parse(b.resets_at)) ? new Date(b.resets_at).toISOString() : null }
-    : null);
-  const u = { session: pick(j.five_hour), week: pick(j.seven_day) };
-  return u.session || u.week ? u : null;
-}
-
-const USAGE_TTL = 12 * 3600 * 1000;   // ms: data pemakaian dianggap basi setelah ini
-
-// Isi kolom di baris akun yang Free: persen pemakaian sesi (kalau terbaca), kalau tidak: kapan terakhir dicek
+// Isi kolom di baris akun yang Free: kapan terakhir dicek (abu-abu kalau sudah lebih dari 30 menit)
 function tokenCell(a) {
   const now = Date.now();
-  const u = a.usage;
-  if (u && now - u.at < USAGE_TTL && (u.session || u.week)) {
-    const b = u.session || u.week;
-    const pct = Math.round(b.pct);
-    return { k: u.session ? 'Sesi' : 'Minggu', v: `${pct}%`, cls: pct >= 90 ? 'hi' : pct >= 70 ? 'mid' : 'lo', title: `Terpakai ${pct}% (dibaca ${ago(now - u.at)})` };
-  }
   const c = a.check;
   return {
     k: 'Dicek', v: c ? ago(now - c.at) : '—',
     cls: c && now - c.at > 30 * 60000 ? 'stale' : '',
     title: c ? `Terakhir dicek ${new Date(c.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Belum pernah dicek',
   };
-}
-
-function usageLine(a) {
-  const u = a.usage;
-  if (!u || !(u.session || u.week)) return 'Belum ada data pemakaian. Akun tanpa data ini (mis. akun gratis) tetap dibaca lewat teks limit di chat.';
-  const part = (name, b) => (b ? `${name} ${Math.round(b.pct)}%${b.resetsAt ? ` (reset ${atShort(b.resetsAt)})` : ''}` : '');
-  return `${[part('Sesi 5 jam', u.session), part('Mingguan', u.week)].filter(Boolean).join(' · ')} · dibaca ${ago(Date.now() - u.at)}`;
 }
 
 // ---------- Status turunan satu akun ----------
@@ -958,28 +974,17 @@ function checkDue() {
 // Hasil satu cek: {state, text, url}. state: limit, busy, reset, idle, loggedout, unknown
 function applyCheck(a, res) {
   const at = Date.now();
-  let state = res.state || 'unknown';
-  // Data pemakaian dari claude.ai: kalau sesi 5 jam atau mingguan sudah 100% dan reset di masa depan, akun pasti limit
-  const usage = parseUsage(res.usage);
-  if (usage) a.usage = { ...usage, at };
-  const hit = usage
-    ? [usage.session, usage.week].filter((b) => b && b.pct >= 100 && b.resetsAt && Date.parse(b.resetsAt) > at)
-        .sort((x, y) => Date.parse(y.resetsAt) - Date.parse(x.resetsAt))[0]
-    : null;
-  if (hit && state !== 'loggedout') state = 'limit';
+  const state = res.state || 'unknown';
   a.check = { state, at };
   trackWork(a, state);
   if (state === 'busy') busyAt.set(a.id, at); else busyAt.delete(a.id);
   if (/^https:\/\/claude\.ai\/chat\//.test(res.url || '') && !a.chatUrl) a.chatUrl = res.url;
 
-  if (hit && state === 'limit') {
-    limitCore(a, new Date(hit.resetsAt), res.url, at);   // jam reset paling pasti: dari data pemakaian
-  } else if (state === 'limit') {
+  if (state === 'limit') {
     onLimitSeen(a.id, res.text, res.url, at);          // set Limit + jam reset dari banner / popup
   } else if (state === 'reset') {
     if (a.status === 'working') markLimitOver(a, 'page');
-  } else if ((state === 'idle' || (usage && state !== 'unknown' && state !== 'loggedout'))
-    && a.status === 'working' && a.resetAt && Date.parse(a.resetAt) > at) {
+  } else if (state === 'idle' && a.status === 'working' && a.resetAt && Date.parse(a.resetAt) > at) {
     // Chat terbuka normal tanpa banner limit: limit sudah tidak aktif
     markLimitOver(a, 'check');
   }
@@ -1202,16 +1207,13 @@ async function runBaitCycle(list, opts = {}) {
   let checkKnown = 0;
   const checkTally = {};
   const failWhy = {};   // alasan pancingan gagal -> jumlah akun
-  // Akun yang pemakaiannya baru saja terbaca dari claude.ai tidak perlu dipancing (tidak ada pesan yang terbuang)
-  const baitList = list.filter((x) => !(x.usage && (x.usage.session || x.usage.week) && Date.now() - x.usage.at < BAIT_INTERVAL));
-  const baitRan = baitList.length > 0;
   try {
-    // Tahap 1: pancingan akun yang datanya belum terbaca
-    for (let i = 0; i < baitList.length && !aborted; i++) {
-      const a = baitList[i];
+    // Tahap 1: pancingan semua akun
+    for (let i = 0; i < list.length && !aborted; i++) {
+      const a = list[i];
       if (!accounts.includes(a)) continue;
       checkingId = a.id;
-      setCheckBtn(`Pancing ${i + 1}/${baitList.length}...`);
+      setCheckBtn(`Pancing ${i + 1}/${list.length}...`);
       refreshChecking();
       let res;
       try { res = await G.bait({ accountId: a.id, url: CLAUDE_URL, mode: 'send', timeoutMs: BAIT_TIMEOUT }); }
@@ -1282,7 +1284,7 @@ async function runBaitCycle(list, opts = {}) {
     const baitFail = abortedAt === 'bait';
     const whySum = Object.entries(failWhy).map(([k, n]) => `${k} (${n})`).join(', ');
     const baitTail = whySum ? ` — penyebab gagal: ${whySum}` : '';
-    if (baitRan) addHistory('bait', !baitFail && usable > 0,
+    addHistory('bait', !baitFail && usable > 0,
       baitFail ? `${who} · ${abortReason(aborted)}${baitSum ? ` (${baitSum})` : ''}`
         : usable > 0 ? `${who} · ${baitSum}${baitTail}`
         : `${who} · tidak ada akun yang terpancing (${baitSum || 'belum login / gagal'})${baitTail}`, baitStartedAt);
@@ -1302,8 +1304,7 @@ async function runBaitCycle(list, opts = {}) {
   settings.lastBait = Date.now();
   saveSettings();
   if (!opts.auto || !document.hidden) {
-    toast((baitRan ? 'Pancingan + cek selesai. ' : 'Cek selesai. ')
-      + Object.entries(baitRan ? tally : checkTally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6500);
+    toast('Pancingan + cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6500);
   }
   return true;
 }
@@ -1432,8 +1433,6 @@ function buildCard(a, index) {
     },
   });
 
-  r.usageLine = el('div', { class: 'hint2 usageline' });
-
   r.when = el('input', {
     type: 'datetime-local',
     onchange: (e) => {
@@ -1501,7 +1500,6 @@ function buildCard(a, index) {
     el('div', { class: 'field' },
       el('label', { class: 'chk' }, r.notesChk, el('span', { text: 'Tampilkan NOTE di akun ini (ketuk tulisan NOTE untuk menulis dan memilih warna)' })),
     ),
-    el('div', { class: 'field' }, el('label', { text: 'Pemakaian akun (dibaca dari claude.ai saat pengecekan)' }), r.usageLine),
     el('div', { class: 'field only-working' },
       el('label', { text: 'Limit reset pada (otomatis dari chat, bisa diatur manual)' }),
       r.when,
@@ -1587,7 +1585,6 @@ function live(root, a) {
     r.rstV.className = `v ${tc.cls}`;
     r.rstV.title = tc.title;
   }
-  r.usageLine.textContent = usageLine(a);
   r.cd.textContent = v.ms === null ? '' : countdownText(v.ms);
   r.cd.classList.toggle('done', v.over);
 }
