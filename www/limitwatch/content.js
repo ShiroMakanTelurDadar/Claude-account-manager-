@@ -445,6 +445,7 @@
     if (!help) return;   // ekstensi belum siap, tanya lagi pada pindaian berikutnya
     if (help.wait) return;   // halaman belum di-refresh oleh aplikasi, tanya lagi pada pindaian berikutnya
     baitAsked = true;
+    if (help.usage) fetchUsage();
     if (!help.bait) return;
     baitStarted = true;
     try {
@@ -452,6 +453,32 @@
       else if (help.bait === 'verify') await baitVerify();
       else if (help.bait === 'continue') await baitContinue(String(help.baitCmd || ''));
     } catch (e) { baitDone(help.bait, 'fail', 'why:error ' + String(e).slice(0, 80)); }
+  }
+
+  // Data pemakaian akun dari claude.ai (yang sama dengan halaman Settings > Usage): persen terpakai + jam reset.
+  // Hanya dibaca saat pengecekan latar belakang, sekali per halaman. Tidak ada pesan yang dikirim ke Claude.
+  let usageSent = false;
+  async function fetchUsage() {
+    if (usageSent) return;
+    usageSent = true;
+    let out = 'none';
+    try {
+      const res = await fetch('/api/organizations', { credentials: 'include' });
+      if (res.ok) {
+        const orgs = await res.json();
+        for (const o of (Array.isArray(orgs) ? orgs : [])) {
+          if (!o || !o.uuid) continue;
+          const u = await fetch('/api/organizations/' + o.uuid + '/usage', { credentials: 'include' });
+          if (!u.ok) continue;
+          const j = await u.json();
+          if (j && (j.five_hour || j.seven_day)) {
+            out = JSON.stringify({ five_hour: j.five_hour || null, seven_day: j.seven_day || null });
+            break;
+          }
+        }
+      }
+    } catch (e) { /* tidak tersedia */ }
+    send({ type: 'usage', usage: out });
   }
 
   function report(state, text, url) {
