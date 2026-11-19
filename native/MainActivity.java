@@ -178,6 +178,7 @@ public class MainActivity extends BridgeActivity {
         private static String sCheckState = "";
         private static String sCheckText = "";
         private static String sCheckUrl = "";
+        private static String sCheckUsage = "";   // JSON pemakaian dari claude.ai ("none" = tidak tersedia), kosong = belum datang
         private static long sCheckStateAt = 0;
 
         // Pancingan: mode sesi tersembunyi ("send" / "verify" / "") dan hasil yang dilaporkan halaman
@@ -276,6 +277,7 @@ public class MainActivity extends BridgeActivity {
             sCheckState = "";
             sCheckText = "";
             sCheckUrl = "";
+            sCheckUsage = "";
             sCheckStateAt = 0;
         }
 
@@ -311,8 +313,16 @@ public class MainActivity extends BridgeActivity {
                                     // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
                                     o.put("wait", sCheckAccountId != null && !sReady);
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
+                                    // Pengecekan biasa (bukan pancingan / continue): halaman diminta membaca data pemakaian akun
+                                    o.put("usage", sCheckAccountId != null && sReady && sBaitMode.isEmpty());
                                     out = new GeckoResult<>();
                                     out.complete(o);
+                                } else if ("usage".equals(type)) {
+                                    if (sCheckAccountId != null && sReady && sBaitMode.isEmpty()) {
+                                        synchronized (GeckoActivity.class) {
+                                            sCheckUsage = msg.optString("usage", "none");
+                                        }
+                                    }
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
                                 } else if ("baitResult".equals(type)) {
@@ -374,6 +384,7 @@ public class MainActivity extends BridgeActivity {
                     }
                     sCheckRunning = true;
                     resetCheck();
+                    sBaitMode = "";   // pengecekan biasa
                     sCheckAccountId = accountId;
                     if (sRuntime == null) sRuntime = GeckoRuntime.create(ctx);
 
@@ -407,12 +418,19 @@ public class MainActivity extends BridgeActivity {
                             }
                             // idle ditahan sebentar: banner limit bisa muncul sedikit setelah kolom chat siap
                             boolean conclusive = !st.isEmpty() && (!"idle".equals(st) || now - at >= 4500);
+                            // Data pemakaian ditunggu sampai 7 detik sejak refresh (kalau belum login tidak perlu)
+                            boolean usageWait;
+                            synchronized (GeckoActivity.class) {
+                                usageWait = sCheckUsage.isEmpty() && !"loggedout".equals(st) && now - base < 7000;
+                            }
+                            if (usageWait) conclusive = false;
                             if (conclusive || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sCheckState.isEmpty() ? "unknown" : sCheckState);
                                     r.put("text", sCheckText);
                                     r.put("url", sCheckUrl);
+                                    r.put("usage", sCheckUsage);
                                 }
                                 try {
                                     s.close();
