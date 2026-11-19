@@ -315,6 +315,7 @@
     let help;
     try { help = await browser.runtime.sendMessage({ type: 'loginHelp' }); } catch (e) { return; }
     if (!help) return;   // ekstensi belum siap, tanya lagi pada pindaian berikutnya
+    if (help.wait) return;   // halaman belum di-refresh oleh aplikasi, tanya lagi pada pindaian berikutnya
     baitAsked = true;
     if (!help.bait) return;
     baitStarted = true;
