@@ -223,33 +223,108 @@
     send({ type: 'baitResult', mode, outcome, text: text || '', url: location.href, deleted: !!deleted });
   }
 
+  // ---- Alat bantu pancingan ----
+  // Kolom chat yang sebenarnya. Di sesi latar belakang semua elemen dianggap "terlihat", jadi textarea atau
+  // contenteditable tersembunyi bisa terpilih lebih dulu. Karena itu kolom chat utama diprioritaskan.
+  function findComposer() {
+    const prefs = ['[data-testid="chat-input"]', 'div.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
+    for (const sel of prefs) {
+      for (const e of document.querySelectorAll(sel)) {
+        if (e.disabled || e.readOnly || e.getAttribute('aria-hidden') === 'true') continue;
+        const t = e.matches('[contenteditable="true"], textarea') ? e : e.querySelector('[contenteditable="true"], textarea');
+        if (t && visible(t)) return t;
+      }
+    }
+    return null;
+  }
+
+  function composerText(box) {
+    if (!box || !box.isConnected) return '';
+    const v = box.tagName === 'TEXTAREA' ? box.value : (box.innerText || box.textContent || '');
+    return String(v).replace(/[\u200b\s]+/g, '');
+  }
+
+  // Masukkan teks ke kolom chat, lalu pastikan benar-benar masuk. Mencoba beberapa cara berurutan.
+  async function putText(box, text) {
+    const has = () => composerText(box).includes(text);
+    box.focus();
+    if (!box.isContentEditable) { fill(box, text); await sleep(200); return has(); }
+    // Cara 1: perintah editor bawaan browser (butuh dokumen terfokus)
+    try { const sel = window.getSelection(); if (sel) sel.selectAllChildren(box); } catch (e) { /* abaikan */ }
+    document.execCommand('selectAll', false, null);
+    document.execCommand('insertText', false, text);
+    await sleep(250);
+    if (has()) return true;
+    // Cara 2: event beforeinput yang dikenali editor ProseMirror
+    box.focus();
+    try { box.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true })); } catch (e) { /* abaikan */ }
+    await sleep(250);
+    if (has()) return true;
+    // Cara 3: tulis langsung ke isi kolom lalu beri tahu editor lewat event input
+    box.innerHTML = '';
+    const p = document.createElement('p');
+    p.textContent = text;
+    box.appendChild(p);
+    try { box.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true })); }
+    catch (e) { box.dispatchEvent(new Event('input', { bubbles: true })); }
+    await sleep(350);
+    return has();
+  }
+
+  function findSendBtn() {
+    return Array.from(document.querySelectorAll(SEND_SEL))
+      .find((b) => visible(b) && !b.disabled && b.getAttribute('aria-disabled') !== 'true') || null;
+  }
+
+  function pressEnter(box) {
+    box.focus();
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      box.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    }
+  }
+
+  // Laporan gagal membawa kode alasan ("why:...") supaya penyebabnya tampil di riwayat aplikasi
+  function baitFail(code) { baitDone('send', 'fail', 'why:' + code); }
+
   // Kirim "." ke chat baru, hentikan respon Claude secepat mungkin, tentukan limit atau free
   async function baitSend() {
-    const box = await waitFor(() => pick('div[contenteditable="true"], textarea'), 20000, 150);
-    if (!box) { baitDone('send', isLoginPage() ? 'loggedout' : 'fail', ''); return; }
+    const box = await waitFor(findComposer, 20000, 150);
+    if (!box) {
+      if (isLoginPage()) baitDone('send', 'loggedout', '');
+      else baitFail('no-composer');
+      return;
+    }
     await sleep(600);   // beri waktu banner limit muncul
     const pre = limitText();
     if (pre) { baitDone('send', 'limit', pre); return; }   // sudah limit sebelum kirim
 
-    box.focus();
-    if (box.isContentEditable) {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('insertText', false, '.');
-    } else {
-      fill(box, '.');
-    }
-    const btn = await waitFor(() => Array.from(document.querySelectorAll(SEND_SEL)).find((b) => visible(b) && !b.disabled), 3000, 50);
+    if (!(await putText(box, '.'))) { baitFail('text-not-inserted'); return; }
+
+    // Kirim: tombol kirim dulu, kalau belum aktif pakai Enter
+    let method = 'button';
+    const btn = await waitFor(findSendBtn, 3000, 50);
     if (btn) btn.click();
-    else box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+    else { method = 'enter'; pressEnter(box); }
 
     // Pindai cepat (30 ms): tombol Stop muncul = pesan diterima, langsung ditekan. Teks limit muncul = akun limit.
+    // Kalau 2,5 detik pesan belum terkirim, coba cara kirim yang satunya (sekali).
     const sentAt = Date.now();
     let lim = '';
     let stopped = false;
-    for (let i = 0; Date.now() - sentAt < 4000; i++) {
+    let submittedAt = 0;
+    let retried = false;
+    for (let i = 0; Date.now() - sentAt < 8000; i++) {
       const stop = findStopButton();
-      if (stop) { stop.click(); stopped = true; break; }
+      if (stop) { stop.click(); stopped = true; submittedAt = submittedAt || Date.now(); break; }
       if (i % 5 === 0) { lim = limitText(); if (lim) break; }
+      if (!submittedAt && (chatId() || !composerText(box))) submittedAt = Date.now();   // alamat berubah / kolom kosong = terkirim
+      if (submittedAt && Date.now() - submittedAt > 4000) break;
+      if (!submittedAt && !retried && Date.now() - sentAt > 2500) {
+        retried = true;
+        const b2 = findSendBtn();
+        if (method === 'enter' && b2) b2.click();
+        else pressEnter(box);
+      }
       await sleep(30);
     }
     if (!lim) {
@@ -258,8 +333,61 @@
     }
     if (lim) { baitDone('send', 'limit', lim); return; }
     // Tunggu alamat chat baru (/chat/...) supaya bisa dibuka lagi dan dihapus nanti
-    await waitFor(() => chatId(), 2500, 100);
-    baitDone('send', stopped || chatId() ? 'free' : 'fail', '');
+    await waitFor(() => chatId(), 3000, 100);
+    if (stopped || chatId()) baitDone('send', 'free', '');
+    else baitFail(submittedAt ? 'no-response' : 'not-submitted');
+  }
+
+  // Continue otomatis di sesi tersembunyi: tekan Continue / Try again kalau ada, kalau tidak ketik command lalu kirim.
+  // Sesudah terkirim, halaman dibiarkan hidup beberapa detik supaya pesan pasti sampai ke server (respon Claude TIDAK dihentikan).
+  async function baitContinue(cmd) {
+    const box = await waitFor(findComposer, 20000, 150);
+    if (!box) {
+      if (isLoginPage()) baitDone('continue', 'loggedout', '');
+      else baitFail('no-composer');
+      return;
+    }
+    await sleep(1500);   // beri waktu banner limit dan tombol Continue muncul
+    const pre = limitText();
+    if (pre) { baitDone('continue', 'limit', pre); return; }   // masih limit: jangan kirim
+
+    let method = 'button';
+    if (clickByText(RESUME_BTN_RE)) {
+      method = 'resume';
+    } else {
+      if (!cmd) { baitFail('no-command'); return; }
+      if (!(await putText(box, cmd))) { baitFail('text-not-inserted'); return; }
+      const btn = await waitFor(findSendBtn, 3000, 50);
+      if (btn) btn.click();
+      else { method = 'enter'; pressEnter(box); }
+    }
+
+    // Tunggu bukti terkirim: Claude mulai bekerja, atau kolom chat kosong, atau muncul limit
+    const sentAt = Date.now();
+    let submittedAt = 0;
+    let retried = false;
+    for (;;) {
+      const now = Date.now();
+      if (now - sentAt > 9000) break;
+      const lim = limitText();
+      if (lim) { baitDone('continue', 'limit', lim); return; }
+      if (isBusy()) { submittedAt = now; break; }
+      if (method !== 'resume' && !submittedAt && (chatId() !== '' && !composerText(box))) submittedAt = now;
+      if (method !== 'resume' && !submittedAt && !composerText(box)) submittedAt = now;
+      if (submittedAt) break;
+      if (!retried && now - sentAt > 3000) {
+        retried = true;
+        if (method === 'resume') clickByText(RESUME_BTN_RE);
+        else if (method === 'enter') { const b2 = findSendBtn(); if (b2) b2.click(); else pressEnter(box); }
+        else pressEnter(box);
+      }
+      await sleep(200);
+    }
+    if (!submittedAt) { baitFail('not-submitted'); return; }
+    await sleep(4000);   // biarkan permintaan sampai ke server
+    const lim2 = limitText();
+    if (lim2) { baitDone('continue', 'limit', lim2); return; }
+    baitDone('continue', 'sent', '');
   }
 
   // Hapus chat lewat API claude.ai (cara utama)
@@ -322,7 +450,8 @@
     try {
       if (help.bait === 'send') await baitSend();
       else if (help.bait === 'verify') await baitVerify();
-    } catch (e) { baitDone(help.bait, 'fail', String(e)); }
+      else if (help.bait === 'continue') await baitContinue(String(help.baitCmd || ''));
+    } catch (e) { baitDone(help.bait, 'fail', 'why:error ' + String(e).slice(0, 80)); }
   }
 
   function report(state, text, url) {
