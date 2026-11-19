@@ -185,6 +185,73 @@ public class MainActivity extends BridgeActivity {
         private static String sBaitUrl = "";
         private static boolean sBaitDeleted = false;
 
+        // Refresh halaman sebelum dibaca (sesi latar belakang).
+        // Halaman dimuat, lalu di-refresh (lewati cache) seperti tombol refresh di browser. Laporan halaman
+        // sebelum refresh selesai dianggap basi dan dibuang.
+        private static volatile boolean sReady = true;
+        private static volatile long sReadyAt = 0;
+        private static int sSessionSeq = 0;   // pewaktu lama dari sesi sebelumnya tidak boleh mengubah sesi yang sekarang
+
+        private static void markReady() {
+            resetCheck();
+            sReadyAt = SystemClock.uptimeMillis();
+            sReady = true;
+        }
+
+        // need = true: muat -> tunggu selesai -> refresh -> baru terima laporan. need = false: langsung terima laporan.
+        private static void setupSession(final GeckoSession s, final Handler h, final boolean need) {
+            if (!need) {
+                sSessionSeq++;
+                sReadyAt = SystemClock.uptimeMillis();
+                sReady = true;
+                return;
+            }
+            sReady = false;
+            sReadyAt = 0;
+            final int seq = ++sSessionSeq;
+            final int[] stage = {0};   // 0 = muat awal, 1 = refresh diminta, 2 = halaman hasil refresh sudah mulai
+            final Runnable doReload = new Runnable() {
+                @Override
+                public void run() {
+                    if (seq != sSessionSeq || stage[0] != 0) return;
+                    stage[0] = 1;
+                    try {
+                        s.reload(GeckoSession.LOAD_FLAGS_BYPASS_CACHE);
+                    } catch (Exception e) {
+                        stage[0] = 2;
+                        markReady();
+                        return;
+                    }
+                    // Cadangan: kalau awal muat ulang tidak terdeteksi, tetap mulai menerima laporan
+                    h.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (seq == sSessionSeq && stage[0] != 2) {
+                                stage[0] = 2;
+                                markReady();
+                            }
+                        }
+                    }, 5000);
+                }
+            };
+            s.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+                @Override
+                public void onPageStop(GeckoSession session, boolean success) {
+                    if (seq == sSessionSeq && stage[0] == 0) h.postDelayed(doReload, 1500);   // beri waktu halaman menampilkan isi awal
+                }
+
+                @Override
+                public void onPageStart(GeckoSession session, String url) {
+                    if (seq == sSessionSeq && stage[0] == 1) {
+                        stage[0] = 2;
+                        markReady();
+                    }
+                }
+            });
+            // Cadangan: muat awal terlalu lama, refresh saja
+            h.postDelayed(doReload, 12000);
+        }
+
         private static synchronized void resetBait() {
             sBaitDone = false;
             sBaitOutcome = "";
@@ -236,13 +303,15 @@ public class MainActivity extends BridgeActivity {
                                     boolean cmdFresh = System.currentTimeMillis() - sPendingCommandAt < 180000L;
                                     o.put("command", sCheckAccountId == null && cmdFresh ? sPendingCommand : "");
                                     // Mode pancingan hanya berlaku di sesi latar belakang
-                                    o.put("bait", sCheckAccountId == null ? "" : sBaitMode);
+                                    o.put("bait", sCheckAccountId == null || !sReady ? "" : sBaitMode);
+                                    // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
+                                    o.put("wait", sCheckAccountId != null && !sReady);
                                     out = new GeckoResult<>();
                                     out.complete(o);
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
                                 } else if ("baitResult".equals(type)) {
-                                    if (sCheckAccountId != null && !sBaitMode.isEmpty()) {
+                                    if (sCheckAccountId != null && sReady && !sBaitMode.isEmpty()) {
                                         recordBait(msg.optString("outcome", "fail"),
                                                 msg.optString("text", ""),
                                                 msg.optString("url", ""),
@@ -253,7 +322,7 @@ public class MainActivity extends BridgeActivity {
                                     String text = msg.optString("text", "");
                                     String url = msg.optString("url", "");
                                     if (sCheckAccountId != null) {
-                                        recordCheck(state, text, url);
+                                        if (sReady) recordCheck(state, text, url);   // sebelum refresh = basi, dibuang
                                     } else if (!"limit".equals(state) || !text.isEmpty()) {
                                         GeckoBrowser.emit(sCurrentAccountId, state, text, url);
                                     }
@@ -307,6 +376,7 @@ public class MainActivity extends BridgeActivity {
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
+                    setupSession(s, h, true);   // muat, refresh, baru baca
                     s.open(sRuntime);
                     s.setActive(true);
                     withExtension(new Runnable() {
@@ -321,6 +391,9 @@ public class MainActivity extends BridgeActivity {
                         @Override
                         public void run() {
                             long now = SystemClock.uptimeMillis();
+                            // Batas waktu dihitung sejak halaman di-refresh; batas total mencegah menggantung
+                            long base = sReadyAt > 0 ? sReadyAt : start;
+                            boolean expired = now - base > timeoutMs || now - start > timeoutMs + 25000L;
                             String st;
                             long at;
                             synchronized (GeckoActivity.class) {
@@ -329,7 +402,7 @@ public class MainActivity extends BridgeActivity {
                             }
                             // idle ditahan sebentar: banner limit bisa muncul sedikit setelah kolom chat siap
                             boolean conclusive = !st.isEmpty() && (!"idle".equals(st) || now - at >= 4500);
-                            if (conclusive || now - start > timeoutMs) {
+                            if (conclusive || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sCheckState.isEmpty() ? "unknown" : sCheckState);
@@ -378,6 +451,8 @@ public class MainActivity extends BridgeActivity {
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
+                    // verify: chat pancingan di-refresh dulu sebelum dibaca dan dihapus. send: chat baru, tidak perlu.
+                    setupSession(s, h, "verify".equals(mode));
                     s.open(sRuntime);
                     s.setActive(true);
                     withExtension(new Runnable() {
@@ -392,11 +467,13 @@ public class MainActivity extends BridgeActivity {
                         @Override
                         public void run() {
                             long now = SystemClock.uptimeMillis();
+                            long base = sReadyAt > 0 ? sReadyAt : start;
+                            boolean expired = now - base > timeoutMs || now - start > timeoutMs + 25000L;
                             boolean done;
                             synchronized (GeckoActivity.class) {
                                 done = sBaitDone;
                             }
-                            if (done || now - start > timeoutMs) {
+                            if (done || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sBaitDone ? sBaitOutcome : "fail");
