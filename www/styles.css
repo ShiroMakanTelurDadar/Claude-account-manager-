@@ -376,3 +376,39 @@ button { cursor: pointer; border: 0; background: none; }
 /* Asal waktu reset (otomatis / manual) */
 .srcline { line-height: 1.35; }
 .chip[hidden] { display: none; }
+
+/* ---- Slide riwayat: muncul dari kiri, lebar kurang dari setengah layar ---- */
+.hbackdrop {
+  position: fixed; inset: 0; z-index: 24; background: rgba(2, 6, 12, .45);
+  opacity: 0; pointer-events: none; transition: opacity .25s ease;
+}
+.hbackdrop.show { opacity: 1; pointer-events: auto; }
+.hdrawer {
+  position: fixed; top: 0; bottom: 0; left: 0; z-index: 25;
+  width: 46vw; max-width: 360px;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: calc(14px + env(safe-area-inset-top)) 10px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, #0b1a2a, #050b12);
+  border-right: 1px solid rgba(125, 211, 252, .3);
+  box-shadow: 10px 0 40px -12px rgba(0, 0, 0, .8);
+  transform: translateX(-105%); visibility: hidden;
+  transition: transform .3s var(--ease), visibility 0s linear .3s;
+}
+.hdrawer.open { transform: none; visibility: visible; transition: transform .3s var(--ease), visibility 0s; }
+.hhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.htitle { font-size: 15px; font-weight: 750; }
+.hx { width: 28px; height: 28px; border-radius: 50%; color: var(--muted); border: 1px solid var(--line); font-size: 12px; }
+.hlist { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; -webkit-overflow-scrolling: touch; }
+.hitem {
+  padding: 8px 9px; border-radius: 12px; border: 1px solid var(--line);
+  background: rgba(125, 211, 252, .05); border-left: 3px solid #4ade80;
+}
+.hitem.bad { border-left-color: #f87171; }
+.hrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px; }
+.hkind { font-size: 12px; font-weight: 700; color: var(--text); }
+.hbadge { font-size: 10px; font-weight: 800; letter-spacing: .03em; padding: 2px 7px; border-radius: 999px; color: #86efac; background: rgba(74, 222, 128, .12); }
+.hitem.bad .hbadge { color: #fca5a5; background: rgba(248, 113, 113, .14); }
+.htime { margin-top: 3px; font-size: 11px; color: var(--sky); }
+.hdet { margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
+.hempty { margin: 4px; }
+.hclear { font-size: 12px; padding: 8px 10px; }
