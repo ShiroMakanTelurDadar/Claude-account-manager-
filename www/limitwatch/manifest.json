@@ -1,16 +1,30 @@
 {
   "manifest_version": 2,
   "name": "limitwatch",
-  "version": "1.2",
+  "version": "1.4",
   "browser_specific_settings": {
-    "gecko": { "id": "limitwatch@app.local" }
+    "gecko": {
+      "id": "limitwatch@app.local"
+    }
   },
-  "permissions": ["nativeMessaging", "geckoViewAddons", "https://claude.ai/*"],
-  "background": { "scripts": ["background.js"] },
+  "permissions": [
+    "nativeMessaging",
+    "geckoViewAddons",
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]
