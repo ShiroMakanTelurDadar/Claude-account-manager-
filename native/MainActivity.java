@@ -1,14 +1,20 @@
 package com.local.claudeaccountmanager;
 
 import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -32,6 +38,10 @@ import org.mozilla.geckoview.GeckoSessionSettings;
 import org.mozilla.geckoview.GeckoView;
 import org.mozilla.geckoview.WebExtension;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 
 public class MainActivity extends BridgeActivity {
@@ -97,6 +107,44 @@ public class MainActivity extends BridgeActivity {
             i.putExtra("command", call.getString("command", ""));
             getActivity().startActivity(i);
             call.resolve();
+        }
+
+        // Simpan teks (backup) sebagai file di folder Download. Android 10+ tanpa izin tambahan.
+        @PluginMethod
+        public void saveFile(PluginCall call) {
+            String name = call.getString("name", "backup.json");
+            String content = call.getString("content", "");
+            String mime = call.getString("mime", "application/json");
+            try {
+                byte[] data = content.getBytes(StandardCharsets.UTF_8);
+                JSObject r = new JSObject();
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentResolver cr = getContext().getContentResolver();
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) { call.reject("Tidak bisa membuat file"); return; }
+                    OutputStream os = cr.openOutputStream(uri);
+                    if (os == null) { call.reject("Tidak bisa menulis file"); return; }
+                    try { os.write(data); } finally { os.close(); }
+                    r.put("where", "Download/" + name);
+                } else {
+                    // Android 9 ke bawah: folder khusus aplikasi (tanpa izin penyimpanan)
+                    File dir = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    if (dir == null) { call.reject("Penyimpanan tidak tersedia"); return; }
+                    if (!dir.exists()) dir.mkdirs();
+                    File f = new File(dir, name);
+                    FileOutputStream os = new FileOutputStream(f);
+                    try { os.write(data); } finally { os.close(); }
+                    r.put("where", f.getAbsolutePath());
+                }
+                r.put("saved", true);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("Gagal menyimpan: " + e.getMessage());
+            }
         }
 
         // Cek satu akun di belakang layar: muat chat di sesi tersembunyi, tunggu laporan halaman, lalu tutup
@@ -178,7 +226,6 @@ public class MainActivity extends BridgeActivity {
         private static String sCheckState = "";
         private static String sCheckText = "";
         private static String sCheckUrl = "";
-        private static String sCheckUsage = "";   // JSON pemakaian dari claude.ai ("none" = tidak tersedia), kosong = belum datang
         private static long sCheckStateAt = 0;
 
         // Pancingan: mode sesi tersembunyi ("send" / "verify" / "") dan hasil yang dilaporkan halaman
@@ -277,7 +324,6 @@ public class MainActivity extends BridgeActivity {
             sCheckState = "";
             sCheckText = "";
             sCheckUrl = "";
-            sCheckUsage = "";
             sCheckStateAt = 0;
         }
 
@@ -313,16 +359,8 @@ public class MainActivity extends BridgeActivity {
                                     // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
                                     o.put("wait", sCheckAccountId != null && !sReady);
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
-                                    // Pengecekan biasa (bukan pancingan / continue): halaman diminta membaca data pemakaian akun
-                                    o.put("usage", sCheckAccountId != null && sReady && sBaitMode.isEmpty());
                                     out = new GeckoResult<>();
                                     out.complete(o);
-                                } else if ("usage".equals(type)) {
-                                    if (sCheckAccountId != null && sReady && sBaitMode.isEmpty()) {
-                                        synchronized (GeckoActivity.class) {
-                                            sCheckUsage = msg.optString("usage", "none");
-                                        }
-                                    }
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
                                 } else if ("baitResult".equals(type)) {
@@ -418,19 +456,12 @@ public class MainActivity extends BridgeActivity {
                             }
                             // idle ditahan sebentar: banner limit bisa muncul sedikit setelah kolom chat siap
                             boolean conclusive = !st.isEmpty() && (!"idle".equals(st) || now - at >= 4500);
-                            // Data pemakaian ditunggu sampai 7 detik sejak refresh (kalau belum login tidak perlu)
-                            boolean usageWait;
-                            synchronized (GeckoActivity.class) {
-                                usageWait = sCheckUsage.isEmpty() && !"loggedout".equals(st) && now - base < 7000;
-                            }
-                            if (usageWait) conclusive = false;
                             if (conclusive || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sCheckState.isEmpty() ? "unknown" : sCheckState);
                                     r.put("text", sCheckText);
                                     r.put("url", sCheckUrl);
-                                    r.put("usage", sCheckUsage);
                                 }
                                 try {
                                     s.close();
