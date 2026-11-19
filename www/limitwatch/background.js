@@ -5,7 +5,7 @@ browser.runtime.onMessage.addListener((msg) => {
     browser.runtime.sendNativeMessage('browser', msg).catch(() => {});
     return undefined;
   }
-  if (msg.type === 'commandDone' || msg.type === 'baitResult') {
+  if (msg.type === 'commandDone' || msg.type === 'baitResult' || msg.type === 'usage') {
     browser.runtime.sendNativeMessage('browser', msg).catch(() => {});
     return undefined;
   }
