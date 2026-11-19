@@ -286,9 +286,22 @@
   // Laporan gagal membawa kode alasan ("why:...") supaya penyebabnya tampil di riwayat aplikasi
   function baitFail(code) { baitDone('send', 'fail', 'why:' + code); }
 
-  // Kirim "." ke chat baru, hentikan respon Claude secepat mungkin, tentukan limit atau free
+  // Teks balasan Claude yang sudah mulai muncul ('' kalau belum ada huruf sama sekali)
+  const REPLY_SELS = ['[data-is-streaming="true"]', '[data-testid="assistant-message"]', '.font-claude-response', '.font-claude-message'];
+  function replyText() {
+    for (const sel of REPLY_SELS) {
+      for (const e of document.querySelectorAll(sel)) {
+        const t = (e.innerText || e.textContent || '').replace(/[\u200b\s]+/g, '');
+        if (t.length > 0) return t;
+      }
+    }
+    return '';
+  }
+
+  // Kirim "." ke chat baru. Tunggu sampai Claude benar-benar membalas (sesedikit apa pun hurufnya), lalu langsung Stop.
+  // Popup upgrade / banner limit muncul = akun limit. Ada balasan = akun free. Tidak ada keduanya sampai batas waktu = gagal.
   async function baitSend() {
-    const box = await waitFor(findComposer, 20000, 150);
+    const box = await waitFor(findComposer, 30000, 150);
     if (!box) {
       if (isLoginPage()) baitDone('send', 'loggedout', '');
       else baitFail('no-composer');
@@ -306,19 +319,29 @@
     if (btn) btn.click();
     else { method = 'enter'; pressEnter(box); }
 
-    // Pindai cepat (30 ms): tombol Stop muncul = pesan diterima, langsung ditekan. Teks limit muncul = akun limit.
-    // Kalau 2,5 detik pesan belum terkirim, coba cara kirim yang satunya (sekali).
+    // Pindai cepat. Urutan keputusan tiap putaran:
+    //  1. popup upgrade / banner limit  -> limit
+    //  2. ada huruf balasan Claude      -> tekan Stop segera -> free
+    //  3. tombol Stop sudah lama tampil tapi balasan tidak terbaca (tampilan berubah) -> Stop -> free
+    // Pesan yang belum terkirim sesudah 2,5 detik dicoba dengan cara kirim yang satunya (sekali).
     const sentAt = Date.now();
-    let lim = '';
-    let stopped = false;
+    const WAIT_REPLY = 40000;   // batas tunggu respon Claude sesudah kirim
     let submittedAt = 0;
+    let stopSeenAt = 0;
     let retried = false;
-    for (let i = 0; Date.now() - sentAt < 8000; i++) {
+    let verdict = '';
+    let lim = '';
+    for (let i = 0; Date.now() - sentAt < WAIT_REPLY; i++) {
+      lim = limitText();
+      if (lim) { verdict = 'limit'; break; }
+      if (!submittedAt && (chatId() || !composerText(box))) submittedAt = Date.now();
+      if (replyText()) { verdict = 'free'; break; }
       const stop = findStopButton();
-      if (stop) { stop.click(); stopped = true; submittedAt = submittedAt || Date.now(); break; }
-      if (i % 5 === 0) { lim = limitText(); if (lim) break; }
-      if (!submittedAt && (chatId() || !composerText(box))) submittedAt = Date.now();   // alamat berubah / kolom kosong = terkirim
-      if (submittedAt && Date.now() - submittedAt > 4000) break;
+      if (stop) {
+        submittedAt = submittedAt || Date.now();
+        stopSeenAt = stopSeenAt || Date.now();
+        if (Date.now() - stopSeenAt > 12000) { verdict = 'free'; break; }
+      }
       if (!submittedAt && !retried && Date.now() - sentAt > 2500) {
         retried = true;
         const b2 = findSendBtn();
@@ -327,14 +350,18 @@
       }
       await sleep(30);
     }
-    if (!lim) {
-      await sleep(400);   // limit kadang tampil sesaat setelah Stop
+    if (verdict === 'free') {
+      // Hentikan balasan secepatnya. Limit kadang baru tampil sesaat sesudah Stop, jadi cek sekali lagi.
+      const stop = findStopButton();
+      if (stop) stop.click();
+      await sleep(500);
       lim = limitText();
+      if (lim) verdict = 'limit';
     }
-    if (lim) { baitDone('send', 'limit', lim); return; }
+    if (verdict === 'limit') { baitDone('send', 'limit', lim); return; }
     // Tunggu alamat chat baru (/chat/...) supaya bisa dibuka lagi dan dihapus nanti
-    await waitFor(() => chatId(), 3000, 100);
-    if (stopped || chatId()) baitDone('send', 'free', '');
+    await waitFor(() => chatId(), 4000, 100);
+    if (verdict === 'free') baitDone('send', 'free', '');
     else baitFail(submittedAt ? 'no-response' : 'not-submitted');
   }
 
