@@ -41,7 +41,7 @@ const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // l
 // Tiap akun: chat baru -> kirim "." -> respon Claude dihentikan secepatnya -> catat limit / free di memori sementara.
 // Sesi pertama = tombol 🎣 (cek otomatis menunggu itu). Sesudahnya tiap BAIT_INTERVAL (3 jam): begitu cek otomatis mau jalan dan sudah 3 jam sejak pancingan terakhir, cek itu didahului pancingan.
 const BAIT_INTERVAL = 3 * 3600 * 1000;
-const BAIT_TIMEOUT = 35000;      // ms: batas waktu satu langkah pancingan per akun
+const BAIT_TIMEOUT = 85000;      // ms: batas waktu satu langkah pancingan per akun (muat halaman + tunggu balasan Claude)
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
 let baitBtn = null;              // tombol ON / OFF pancingan
 let baitRunBtn = null;           // tombol 🎣 pancing sekarang
@@ -1157,7 +1157,7 @@ const BAIT_WHY = {
   'no-composer': 'kolom chat tidak ditemukan',
   'text-not-inserted': 'titik tidak masuk ke kolom chat',
   'not-submitted': 'pesan tidak terkirim',
-  'no-response': 'pesan terkirim tapi chat tidak terbentuk',
+  'no-response': 'pesan terkirim tapi Claude tidak membalas dan tidak ada popup limit',
   timeout: 'halaman tidak melapor (timeout)',
 };
 function baitWhy(text) {
@@ -1686,6 +1686,8 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
 (async function init() {
   accounts = await loadAccounts();
   await loadSettings();
+  // Jadwal cek otomatis yang terlewat saat aplikasi tertutup tidak dikejar: tidak ada pengecekan saat aplikasi dibuka
+  if (settings.autoMin && Date.now() >= settings.lastAuto + settings.autoMin * 60000) { settings.lastAuto = Date.now(); saveSettings(); }
   // Akun yang terakhir terlihat bekerja: tetap dipantau, supaya "selesai" terdeteksi walau aplikasi sempat tertutup
   for (const a of accounts) {
     if (a.check && a.check.state === 'busy' && Date.now() - a.check.at < WATCH_MAX) watching.set(a.id, a.check.at);
@@ -1699,5 +1701,5 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   render();
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); maybeAutoCheck(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); } });
 })();
