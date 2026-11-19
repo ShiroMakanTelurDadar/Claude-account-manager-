@@ -412,3 +412,84 @@ button { cursor: pointer; border: 0; background: none; }
 .hdet { margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
 .hempty { margin: 4px; }
 .hclear { font-size: 12px; padding: 8px 10px; }
+
+/* ---- Akun yang sedang dicek: seluruh tepi kartu menyala dan berputar ---- */
+@property --edge { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.acc.checking { border-color: rgba(34, 211, 238, .7); animation: chkglow 1.4s ease-in-out infinite; }
+@keyframes chkglow {
+  0%, 100% { box-shadow: 0 0 10px -2px rgba(34, 211, 238, .35), 0 10px 30px -18px rgba(0, 0, 0, .9); }
+  50% { box-shadow: 0 0 30px -2px rgba(34, 211, 238, .8), 0 10px 30px -18px rgba(0, 0, 0, .9); }
+}
+.acc.checking::after {
+  content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  border-radius: inherit; padding: 3px;
+  background: conic-gradient(from var(--edge), transparent 0 50%, rgba(34, 211, 238, .25) 62%, #22d3ee 82%, #ffffff 92%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: edgespin 1.5s linear infinite;
+}
+@keyframes edgespin { to { --edge: 360deg; } }
+
+/* ================= Perapihan header, tombol atas, NOTE, pemakaian ================= */
+
+/* Header: tombol menu (tiga garis) di kiri atas + judul */
+header { flex-direction: row; align-items: center; gap: 12px; margin: 0 4px 12px; }
+.menubtn {
+  width: 40px; height: 40px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+  border-radius: 12px; border: 1px solid var(--line); background: rgba(125, 211, 252, .06);
+  transition: transform .15s, background .2s;
+}
+.menubtn span { display: block; width: 18px; height: 2px; border-radius: 2px; background: var(--sky); transition: width .2s; }
+.menubtn span:nth-child(2) { width: 13px; }
+.menubtn:active { transform: scale(.94); background: rgba(125, 211, 252, .16); }
+
+/* Ringkasan akun: satu panel, bukan bubble terpisah */
+#summary { display: block; margin: 0 4px 10px; }
+.sumbar {
+  display: flex; align-items: center; justify-content: space-around; gap: 4px;
+  padding: 9px 12px; border-radius: 14px; border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(125, 211, 252, .08), rgba(125, 211, 252, .03));
+}
+.sumbar i { width: 1px; height: 18px; background: linear-gradient(180deg, transparent, rgba(125, 211, 252, .4), transparent); }
+.sg { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); }
+.sg b { font-size: 18px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+.sg.free b { color: var(--sky); }
+.sg.work b { color: var(--amber); }
+
+/* Tombol alat: dua baris rapi */
+.tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0 4px 6px; }
+.tools .tbtn, .tools .tsel { height: 40px; border-radius: 12px; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.tools .tsel { width: 100%; justify-content: flex-start; }
+.tbtn.primary {
+  font-weight: 700; color: #03121a;
+  background: linear-gradient(135deg, #7dd3fc, #22d3ee); border-color: transparent;
+  box-shadow: 0 8px 20px -10px rgba(34, 211, 238, .8);
+}
+.tbtn.primary:active { background: linear-gradient(135deg, #5cc4f5, #16bcd6); }
+.tbtn.primary:disabled { opacity: .6; box-shadow: none; }
+.tbtn.sq { width: 44px; padding: 0; font-size: 17px; }
+.autohint { margin: 0 6px 12px; }
+
+/* Kolom kedua baris akun: pemakaian / dicek */
+.is-free .rst .v.lo { color: #86efac; }
+.is-free .rst .v.mid { color: var(--amber); }
+.is-free .rst .v.hi { color: #f87171; }
+.is-free .rst .v.stale { color: var(--muted); }
+.usageline { margin: 2px 0 0; }
+.tsel.quick { width: auto; padding: 5px 26px 5px 10px; }
+
+/* NOTE: satu tulisan berwarna di bawah nama akun (penanda sekaligus catatan) */
+.memo {
+  display: block; max-width: 100%; margin-top: 3px; padding: 0; text-align: left;
+  font-size: 11px; font-weight: 700; line-height: 1.2; color: var(--mc, #ef4444);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--mc, #ef4444) 55%, transparent);
+  transition: opacity .15s;
+}
+.memo[hidden] { display: none; }
+.memo.empty { font-size: 10px; font-weight: 800; letter-spacing: .14em; }
+.memo:active { opacity: .6; }
+
+/* Tombol di bawah panel riwayat */
+.hdrawer .hclear { width: 100%; flex-shrink: 0; text-align: center; }
+.hdrawer .hlist { min-height: 0; }
