@@ -2,9 +2,10 @@ const OLD_CMD = 'Lanjutkan task sebelumnya dari bagian terakhir yang belum seles
 const DEFAULT_CMD = 'Lanjutkan project "{project}" dari bagian terakhir yang belum selesai.';
 const CLAUDE_URL = 'https://claude.ai/new';
 const LOGIN_URL = 'https://claude.ai/login';
-const STORE_KEY = 'accounts';
-const SETTINGS_KEY = 'settings';
-const HISTORY_KEY = 'history';
+// Kunci penyimpanan per pengguna: diisi setelah login (lihat Auth.key di auth.js)
+let STORE_KEY = 'accounts';
+let SETTINGS_KEY = 'settings';
+let HISTORY_KEY = 'history';
 const HISTORY_MAX = 100;         // jumlah riwayat yang disimpan (yang paling lama dibuang)
 
 const Cap = window.Capacitor || {};
@@ -1684,6 +1685,10 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
 });
 
 (async function init() {
+  await Auth.ready;   // tunggu login berhasil
+  STORE_KEY = Auth.key('accounts');
+  SETTINGS_KEY = Auth.key('settings');
+  HISTORY_KEY = Auth.key('history');
   accounts = await loadAccounts();
   await loadSettings();
   // Jadwal cek otomatis yang terlewat saat aplikasi tertutup tidak dikejar: tidak ada pengecekan saat aplikasi dibuka
@@ -1699,6 +1704,7 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   initTools();
   initHistory();
   render();
+  if (Auth.notice) toast(Auth.notice, 9000);
   scheduleAll();
   setInterval(tick, 1000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); } });
