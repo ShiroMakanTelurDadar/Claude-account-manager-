@@ -174,8 +174,8 @@ public class MainActivity extends BridgeActivity {
             final String mode = "verify".equals(rawMode) ? "verify" : "continue".equals(rawMode) ? "continue" : "send";
             // mode "continue": kirim Continue / command ke chat akun di sesi tersembunyi (tanpa membuka browser)
             final String command = call.getString("command", "");
-            Integer t = call.getInt("timeoutMs", 35000);
-            final int timeout = t == null ? 35000 : t;
+            Integer t = call.getInt("timeoutMs", 85000);
+            final int timeout = t == null ? 85000 : t;
             GeckoActivity.runBait(getContext().getApplicationContext(), accountId, url, mode, command, timeout,
                     new CheckCallback() {
                         @Override
