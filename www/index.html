@@ -6,12 +6,19 @@
   <meta name="theme-color" content="#04070c">
   <title>Claude Account Manager</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="auth.css">
 </head>
 <body>
   <div class="bg" aria-hidden="true"></div>
 
   <header>
-    <button id="menuBtn" class="menubtn" type="button" aria-label="Buka menu: riwayat, ekspor, impor"><span></span><span></span><span></span></button>
+    <div class="hbar">
+      <button id="menuBtn" class="menubtn" type="button" aria-label="Buka menu: riwayat, ekspor, impor"><span></span><span></span><span></span></button>
+      <button id="ctlBtn" class="ctlbtn" type="button" aria-label="Control: akun, keamanan, tampilan login">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>
+        Control
+      </button>
+    </div>
     <h1>Account Manager</h1>
   </header>
   <div id="summary"></div>
@@ -25,6 +32,8 @@
   <p class="hint" id="empty" hidden>Belum ada akun. Tambahkan satu di atas.</p>
   <div id="toast" hidden></div>
 
+  <script src="auth.js"></script>
+  <script src="control.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
