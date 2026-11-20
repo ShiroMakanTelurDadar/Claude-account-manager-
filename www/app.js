@@ -439,11 +439,11 @@ async function connectAccount(a) {
 }
 
 // ---------- Deteksi limit dari browser aplikasi ----------
-const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|hit your [^\n]{0,40}limit/i;
+const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|keep chatting with claude pro|free messages return|keep going now with pro|free usage ran out|usage ran out|hit your [^\n]{0,40}limit/i;
 
 // "until 4:00 PM", "resets at 2:50 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu (dihitung dari saat banner terlihat)
 function parseResetAt(text, ref = Date.now()) {
-  const m = /(?:until|hingga|sampai|resets?(?:\s+at)?|reset pada)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
+  const m = /(?:until|hingga|sampai|resets?(?:\s+at)?|returns?(?:\s+at)?|reset pada)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
   if (!m) return null;
   let h = parseInt(m[1], 10);
   const min = parseInt(m[2], 10);
