@@ -7,7 +7,7 @@
   if (!Auth || !btn) return;
 
   const MAX_VIDEO = 30 * 1024 * 1024;   // 30 MB
-  const HIST_FRAC = 0.5;                // tinggi gambar slide riwayat = setengah tinggi layar (samakan dengan --himg-h di styles.css)
+  const HIST_FRAC = 1;                  // gambar slide riwayat memenuhi seluruh tinggi layar (samakan dengan --himg-h di styles.css)
   let flashBg = '', flashHist = '';     // pesan yang tampil setelah menu dibangun ulang
   const h = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
@@ -158,7 +158,7 @@
   function histRatio() {
     const w = Math.min(window.innerWidth * 0.46, 360);
     const hh = window.innerHeight * HIST_FRAC;
-    return Math.min(1.1, Math.max(0.45, w / hh));
+    return Math.min(1.1, Math.max(0.18, w / hh));
   }
   const notifyHist = () => window.dispatchEvent(new Event('cam:histbg'));
 
