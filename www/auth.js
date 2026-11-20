@@ -413,6 +413,7 @@
     h('img', { class: 'auth-logo', src: 'assets/logo.gif', alt: 'Logo' }),
     h('b', { text: 'ShiroNeko' }),
     h('span', { text: '© Eternals Studio 2026' }),
+    h('span', { class: 'thanks', text: 'Thanks for your support' }),
   );
   root.append(mediaBg, h('div', { class: 'auth-wrap' }, card, foot));
 
