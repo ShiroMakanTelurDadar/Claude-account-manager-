@@ -20,7 +20,15 @@
   const send = async (m) => {
     try { return await browser.runtime.sendMessage(m); } catch (_) { return null; }
   };
-  const vis = (e) => !!e && !!(e.offsetWidth || e.offsetHeight || (e.getClientRects && e.getClientRects().length));
+  // Sesi tersembunyi tidak punya layar, jadi ukuran elemen bisa 0. Jangan pakai ukuran: cukup cek tidak di-hide lewat CSS.
+  const vis = (e) => {
+    if (!e || !e.isConnected) return false;
+    try {
+      if (typeof e.checkVisibility === 'function') return e.checkVisibility({ visibilityProperty: true });
+      const cs = getComputedStyle(e);
+      return cs.display !== 'none' && cs.visibility !== 'hidden';
+    } catch (_) { return true; }
+  };
   const txt = (e) => ((e && (e.innerText || e.textContent)) || '').replace(/\s+/g, ' ').trim();
   const labelOf = (b) => (b.getAttribute('aria-label') || txt(b) || '').trim();
 
@@ -258,6 +266,13 @@
     };
     setInterval(tick, 1000);
     tick();
+    // Kalau 15 detik tidak ada status yang dikenal: kirim sonde supaya aplikasi bisa menampilkan apa yang dilihat skrip
+    setTimeout(() => {
+      if (last) return;
+      const n = (q) => document.querySelectorAll(q).length;
+      const sonde = `sonde: composer=${composer() ? 1 : 0} editable=${n('[contenteditable="true"]')} textarea=${n('textarea')} tombol=${n('button')} panjang=${((document.body && document.body.innerText) || '').length} lebar=${window.innerWidth}`;
+      send({ type: 'hello', url: location.href, title: sonde, challenge: isChallenge() });
+    }, 15000);
   }
 
   async function main() {
