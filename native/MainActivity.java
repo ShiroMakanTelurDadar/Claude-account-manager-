@@ -249,6 +249,32 @@ public class MainActivity extends BridgeActivity {
         // Halaman dimuat, lalu di-refresh (lewati cache) seperti tombol refresh di browser. Laporan halaman
         // sebelum refresh selesai dianggap basi dan dibuang.
         private static volatile boolean sReady = true;
+
+        // Diagnosa: apa yang terjadi di sesi tersembunyi. Dikirim ke aplikasi supaya alasan gagal bisa dijelaskan.
+        private static volatile String sExtInfo = "";        // hasil pemasangan ekstensi ("ok" atau pesan error)
+        private static volatile int sPageStarts = 0;
+        private static volatile int sPageStops = 0;
+        private static volatile boolean sPageOk = false;
+        private static volatile String sLastUrl = "";
+        private static volatile boolean sHello = false;       // skrip ekstensi sudah melapor dari dalam halaman
+        private static volatile String sHelloInfo = "";
+
+        private static void resetDiag() {
+            sPageStarts = 0;
+            sPageStops = 0;
+            sPageOk = false;
+            sLastUrl = "";
+            sHello = false;
+            sHelloInfo = "";
+        }
+
+        private static String buildDiag() {
+            String load = sPageStarts == 0 ? "tidak mulai" : sPageStops == 0 ? "belum selesai" : sPageOk ? "selesai" : "gagal";
+            return "ext=" + (sExtInfo.isEmpty() ? "?" : sExtInfo)
+                    + "; muat=" + load
+                    + "; hello=" + (sHello ? sHelloInfo : "tidak")
+                    + "; url=" + sLastUrl;
+        }
         private static volatile long sReadyAt = 0;
         private static int sSessionSeq = 0;   // pewaktu lama dari sesi sebelumnya tidak boleh mengubah sesi yang sekarang
 
@@ -264,6 +290,19 @@ public class MainActivity extends BridgeActivity {
                 sSessionSeq++;
                 sReadyAt = SystemClock.uptimeMillis();
                 sReady = true;
+                s.setProgressDelegate(new GeckoSession.ProgressDelegate() {
+                    @Override
+                    public void onPageStop(GeckoSession session, boolean success) {
+                        sPageStops++;
+                        sPageOk = success;
+                    }
+
+                    @Override
+                    public void onPageStart(GeckoSession session, String url) {
+                        sPageStarts++;
+                        sLastUrl = url == null ? "" : url;
+                    }
+                });
                 return;
             }
             sReady = false;
@@ -297,11 +336,15 @@ public class MainActivity extends BridgeActivity {
             s.setProgressDelegate(new GeckoSession.ProgressDelegate() {
                 @Override
                 public void onPageStop(GeckoSession session, boolean success) {
+                    sPageStops++;
+                    sPageOk = success;
                     if (seq == sSessionSeq && stage[0] == 0) h.postDelayed(doReload, 1500);   // beri waktu halaman menampilkan isi awal
                 }
 
                 @Override
                 public void onPageStart(GeckoSession session, String url) {
+                    sPageStarts++;
+                    sLastUrl = url == null ? "" : url;
                     if (seq == sSessionSeq && stage[0] == 1) {
                         stage[0] = 2;
                         markReady();
@@ -369,6 +412,13 @@ public class MainActivity extends BridgeActivity {
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
                                     out = new GeckoResult<>();
                                     out.complete(o);
+                                } else if ("hello".equals(type)) {
+                                    sHello = true;
+                                    String hu = msg.optString("url", "");
+                                    String ht = msg.optString("title", "");
+                                    if (hu.length() > 90) hu = hu.substring(0, 90);
+                                    if (ht.length() > 60) ht = ht.substring(0, 60);
+                                    sHelloInfo = hu + " | judul: " + ht + (msg.optBoolean("challenge", false) ? " | PEMERIKSAAN KEAMANAN" : "");
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
                                 } else if ("baitResult".equals(type)) {
@@ -408,10 +458,16 @@ public class MainActivity extends BridgeActivity {
                                 if (ext != null) {
                                     ext.setMessageDelegate(MESSAGE_DELEGATE, "browser");
                                     sExtReady = true;
+                                    sExtInfo = "ok";
+                                } else {
+                                    sExtInfo = "gagal dipasang (kosong)";
                                 }
                                 r.run();
                             },
-                            err -> r.run());
+                            err -> {
+                                sExtInfo = "gagal dipasang: " + String.valueOf(err);
+                                r.run();
+                            });
         }
 
         // Cek satu akun di sesi tersembunyi (tanpa layar). Satu pengecekan pada satu waktu.
@@ -430,6 +486,7 @@ public class MainActivity extends BridgeActivity {
                     }
                     sCheckRunning = true;
                     resetCheck();
+                    resetDiag();
                     sBaitMode = "";   // pengecekan biasa
                     sCheckAccountId = accountId;
                     if (sRuntime == null) sRuntime = GeckoRuntime.create(ctx);
@@ -471,6 +528,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("text", sCheckText);
                                     r.put("url", sCheckUrl);
                                 }
+                                r.put("diag", buildDiag());
                                 try {
                                     s.close();
                                 } catch (Exception ignored) {
@@ -505,6 +563,7 @@ public class MainActivity extends BridgeActivity {
                     sCheckRunning = true;
                     resetCheck();
                     resetBait();
+                    resetDiag();
                     sCheckAccountId = accountId;
                     sBaitMode = mode;
                     sBaitCmd = command == null ? "" : command;
@@ -544,6 +603,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("url", sBaitUrl);
                                     r.put("deleted", sBaitDeleted);
                                 }
+                                r.put("diag", buildDiag());
                                 try {
                                     s.close();
                                 } catch (Exception ignored) {
