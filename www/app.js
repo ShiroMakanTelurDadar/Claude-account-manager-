@@ -129,8 +129,10 @@ async function saveHistory() {
     else localStorage.setItem(HISTORY_KEY, raw);
   } catch {}
 }
-function addHistory(kind, ok, detail, at) {
-  histLog.unshift({ id: uid(), at: at || Date.now(), kind, ok: !!ok, detail: detail || '' });
+function addHistory(kind, ok, detail, at, info) {
+  const item = { id: uid(), at: at || Date.now(), kind, ok: !!ok, detail: detail || '' };
+  if (info && info.fails && info.fails.length) item.info = info;
+  histLog.unshift(item);
   histLog.sort((x, y) => y.at - x.at);
   if (histLog.length > HISTORY_MAX) histLog.length = HISTORY_MAX;
   saveHistory();
@@ -779,14 +781,138 @@ function renderHistory() {
     histListEl.replaceChildren(el('p', { class: 'hint2 hempty', text: 'Belum ada riwayat. Riwayat muncul setelah pancingan atau pengecekan dijalankan.' }));
     return;
   }
-  histListEl.replaceChildren(...histLog.map((h) => el('div', { class: `hitem ${h.ok ? 'ok' : 'bad'}` },
+  histListEl.replaceChildren(...histLog.map((h) => el('div', {
+    class: `hitem tap ${h.ok ? 'ok' : 'bad'}`, role: 'button', tabindex: '0',
+    onclick: () => showHistDetail(h),
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showHistDetail(h); } },
+  },
     el('div', { class: 'hrow' },
       el('span', { class: 'hkind', text: h.kind === 'bait' ? '🎣 Pancingan' : '⟳ Pengecekan' }),
       el('span', { class: 'hbadge', text: h.ok ? 'Berhasil' : 'Gagal' }),
     ),
     el('div', { class: 'htime', text: fmtHistTime(h.at) }),
     h.detail ? el('div', { class: 'hdet', text: h.detail }) : null,
+    el('div', { class: 'hmore', text: h.ok ? 'Ketuk untuk detail' : 'Ketuk: lihat penyebab gagal' }),
   )));
+}
+
+// ---------- Detail riwayat: penyebab gagal dijelaskan lengkap ----------
+// Catat satu kegagalan (atau akun belum login) dari hasil G.check / G.bait
+function noteFail(fails, a, step, res) {
+  if (!res || res.error) return;
+  const st = res.state || 'unknown';
+  if (st !== 'unknown' && st !== 'fail' && st !== 'loggedout') return;
+  const m = /^why:(\S+)(.*)$/.exec(res.text || '');
+  fails.push({
+    who: shortName(a.name), step, state: st,
+    why: m ? m[1] : '', extra: m ? m[2].trim().slice(0, 160) : '',
+    diag: String(res.diag || '').slice(0, 320),
+  });
+  if (fails.length > 24) fails.length = 24;
+}
+
+function parseDiag(d) {
+  const o = {};
+  for (const part of String(d || '').split('; ')) {
+    const i = part.indexOf('=');
+    if (i > 0) o[part.slice(0, i)] = part.slice(i + 1);
+  }
+  return o;
+}
+
+// Penjelasan dan saran untuk satu kegagalan. Kembali {cause, fix}
+function explainFail(f) {
+  const d = parseDiag(f.diag);
+  const hello = d.hello && d.hello !== 'tidak' ? d.hello : '';
+  if (f.state === 'loggedout' || f.why === 'loggedout') {
+    return { cause: 'Akun ini belum login di browser aplikasi (halaman yang terbuka adalah halaman login Claude).', fix: 'Tekan Connect / Login pada akun ini, masuk ke Claude sekali, lalu cek lagi.' };
+  }
+  if (/PEMERIKSAAN KEAMANAN/.test(hello) || f.why === 'challenge') {
+    return { cause: 'claude.ai menampilkan pemeriksaan keamanan ("Verify you are human" / Cloudflare) di browser tersembunyi, sehingga halaman chat tidak pernah tampil.', fix: 'Buka akun ini lewat tombol Connect, selesaikan pemeriksaan sekali, lalu coba lagi. Kalau terus muncul, jangan terlalu sering mengecek (naikkan jeda cek otomatis).' };
+  }
+  switch (f.why) {
+    case 'no-composer':
+      return { cause: 'Halaman terbuka tetapi kolom chat tidak ditemukan dalam 30 detik. Biasanya akun belum login, atau halaman yang tampil bukan halaman chat' + (f.extra ? ` (${f.extra})` : '') + '.', fix: 'Pastikan akun sudah login lewat Connect. Kalau sudah login, tampilan claude.ai mungkin berubah: perbarui fungsi composer() di limitwatch/content.js.' };
+    case 'text-not-inserted':
+      return { cause: 'Kolom chat ketemu tapi titik (".") tidak berhasil diketik ke dalamnya.', fix: 'Cara mengisi kolom chat di claude.ai mungkin berubah: perbarui setValue() di limitwatch/content.js.' };
+    case 'not-submitted':
+      return { cause: 'Teks sudah masuk kolom chat tetapi pesan tidak terkirim (tombol kirim tidak ditemukan atau tidak bisa ditekan).', fix: 'Perbarui SEND_LABEL_RE / sendBtn() di limitwatch/content.js sesuai tombol kirim claude.ai sekarang.' };
+    case 'no-response':
+      return { cause: 'Pesan terkirim tetapi Claude tidak mulai membalas dan tidak muncul popup limit dalam batas waktu.', fix: 'Coba lagi nanti. Kalau terus begini, jaringan lambat atau Claude sedang bermasalah.' };
+    case 'error':
+      return { cause: `Skrip di halaman mengalami error${f.extra ? `: ${f.extra}` : ''}.`, fix: 'Kirim detail teknis ini untuk diperbaiki.' };
+    default:
+      break;
+  }
+  // Timeout / tidak terbaca: halaman tidak melapor sama sekali. Penyebabnya dibaca dari diagnosa native.
+  if (d.ext && d.ext !== 'ok' && d.ext !== '?') {
+    return { cause: `Ekstensi pembaca halaman gagal dipasang di browser aplikasi (${d.ext}). Tanpa ekstensi, halaman tidak bisa dibaca.`, fix: 'Pasang ulang APK terbaru. Pastikan folder www/limitwatch (manifest.json, background.js, content.js) ikut ter-build.' };
+  }
+  if (d.muat === 'tidak mulai') {
+    return { cause: 'Halaman claude.ai tidak pernah mulai dimuat di browser tersembunyi.', fix: 'Cek koneksi internet. Kalau internet normal, tutup aplikasi sepenuhnya lalu buka lagi (mesin browser tersembunyi mungkin macet).' };
+  }
+  if (d.muat === 'gagal') {
+    return { cause: 'Halaman claude.ai gagal dimuat (internet putus, sangat lambat, atau claude.ai tidak terjangkau).', fix: 'Cek koneksi internet lalu ulangi.' };
+  }
+  if (d.muat === 'belum selesai') {
+    return { cause: 'Halaman claude.ai terlalu lama dimuat sampai batas waktu habis (internet lambat).', fix: 'Coba lagi saat koneksi lebih baik.' };
+  }
+  if (d.hello === 'tidak') {
+    return { cause: 'Halaman sudah terbuka, tetapi skrip pembaca (limitwatch/content.js) tidak berjalan di halaman itu, jadi tidak ada laporan sama sekali. Penyebab paling mungkin: isi content.js salah atau rusak, atau ekstensi belum aktif di sesi ini.', fix: 'Pastikan limitwatch/content.js adalah skrip pembaca halaman (bukan skrip menu Control), lalu build ulang APK.' };
+  }
+  if (hello) {
+    return { cause: 'Skrip pembaca berjalan di halaman, tetapi tidak menemukan tanda status yang dikenal (kolom chat, banner limit, atau halaman login) sampai batas waktu habis.', fix: 'Tampilan claude.ai mungkin berubah, atau halaman macet di layar lain. Lihat alamat halaman di detail teknis; perbarui pola di limitwatch/content.js.' };
+  }
+  return { cause: 'Halaman tidak melapor sampai batas waktu habis (timeout). Riwayat lama tidak menyimpan diagnosa, jadi penyebab pastinya tidak diketahui.', fix: 'Jalankan pengecekan lagi dengan APK versi baru: riwayat berikutnya akan memuat diagnosa lengkap.' };
+}
+
+let histDetailEl = null;
+function closeHistDetail() { if (histDetailEl) { histDetailEl.remove(); histDetailEl = null; } }
+
+function showHistDetail(h) {
+  closeHistDetail();
+  const fails = (h.info && h.info.fails) || [];
+  const kids = [
+    el('div', { class: 'hdhead' },
+      el('b', { text: h.kind === 'bait' ? '🎣 Pancingan' : '⟳ Pengecekan' }),
+      el('span', { class: `hbadge ${h.ok ? '' : 'badx'}`, text: h.ok ? 'Berhasil' : 'Gagal' }),
+    ),
+    el('div', { class: 'htime', text: fmtHistTime(h.at) }),
+    el('p', { class: 'hdbody', text: h.detail || '-' }),
+  ];
+
+  // Kelompokkan kegagalan yang penyebabnya sama (misal 7 akun gagal karena hal yang sama)
+  const groups = new Map();
+  for (const f of fails) {
+    const ex = explainFail(f);
+    const key = ex.cause + '|' + ex.fix;
+    if (!groups.has(key)) groups.set(key, { ex, items: [] });
+    groups.get(key).items.push(f);
+  }
+  if (!fails.length && !h.ok) {
+    const ex = explainFail({ state: 'unknown', why: /timeout/.test(h.detail || '') ? 'timeout' : '', diag: '' });
+    groups.set('lama', { ex, items: [] });
+  }
+  for (const { ex, items } of groups.values()) {
+    const accs = [...new Set(items.map((f) => `${f.who} (${f.step})`))];
+    kids.push(el('div', { class: 'hdgrp' },
+      el('div', { class: 'hdlbl', text: 'Penyebab' }),
+      el('p', { class: 'hdtxt', text: ex.cause }),
+      el('div', { class: 'hdlbl', text: 'Yang bisa dilakukan' }),
+      el('p', { class: 'hdtxt', text: ex.fix }),
+      accs.length ? el('div', { class: 'hdlbl', text: `Akun terdampak (${accs.length})` }) : null,
+      accs.length ? el('p', { class: 'hdtxt', text: accs.join(', ') }) : null,
+      items[0] && (items[0].diag || items[0].extra)
+        ? el('pre', { class: 'hdtech', text: `Detail teknis: ${items[0].diag || ''}${items[0].extra ? `\n${items[0].extra}` : ''}` })
+        : null,
+    ));
+  }
+  if (h.ok && !fails.length) kids.push(el('p', { class: 'hint2', text: 'Tidak ada masalah pada proses ini.' }));
+
+  const box = el('div', { class: 'hdbox', role: 'dialog', 'aria-label': 'Detail riwayat' }, ...kids,
+    el('button', { type: 'button', class: 'btn sm hdclose', text: 'Tutup', onclick: closeHistDetail }));
+  histDetailEl = el('div', { class: 'hdmodal', onclick: (e) => { if (e.target === histDetailEl) closeHistDetail(); } }, box);
+  document.body.append(histDetailEl);
 }
 
 function initHistory() {
@@ -1067,6 +1193,7 @@ async function runChecks(list, opts = {}) {
   let lastLabel = '';
   const startedAt = Date.now();
   let known = 0;   // jumlah akun yang halamannya terbaca (bukan "tidak terbaca")
+  const fails = [];   // catatan kegagalan per akun untuk detail riwayat
   try {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
@@ -1084,6 +1211,7 @@ async function runChecks(list, opts = {}) {
       if (res.error) { aborted = res.error; break; }
       applyCheck(a, res);
       if (res.state && res.state !== 'unknown') known++;
+      noteFail(fails, a, 'Cek', res);
       lastLabel = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
       tally[lastLabel] = (tally[lastLabel] || 0) + 1;
     }
@@ -1102,7 +1230,7 @@ async function runChecks(list, opts = {}) {
       : Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ');
     addHistory('check', !aborted && known > 0,
       aborted ? `${who} · ${abortReason(aborted)}${sum ? ` (${sum})` : ''}`
-        : `${who} · ${sum || 'tidak ada hasil'}`, startedAt);
+        : `${who} · ${sum || 'tidak ada hasil'}`, startedAt, { fails });
   }
   if (aborted) {
     if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
@@ -1254,6 +1382,7 @@ async function runBaitCycle(list, opts = {}) {
   let checkKnown = 0;
   const checkTally = {};
   const failWhy = {};   // alasan pancingan gagal -> jumlah akun
+  const fails = [];     // catatan kegagalan per akun untuk detail riwayat
   try {
     // Tahap 1: pancingan semua akun
     for (let i = 0; i < list.length && !aborted; i++) {
@@ -1266,6 +1395,7 @@ async function runBaitCycle(list, opts = {}) {
       try { res = await G.bait({ accountId: a.id, url: CLAUDE_URL, mode: 'send', timeoutMs: BAIT_TIMEOUT }); }
       catch (e) { res = { state: 'fail' }; }
       if (res.error) { aborted = res.error; abortedAt = 'bait'; break; }
+      noteFail(fails, a, 'Pancing', res);
       const why = res.state === 'fail' ? baitWhy(res.text) : '';
       baitMemory.set(a.id, {
         why, state: res.state, text: why ? '' : (res.text || ''),
@@ -1290,6 +1420,7 @@ async function runBaitCycle(list, opts = {}) {
         try { vr = await G.bait({ accountId: a.id, url: mem.chatUrl, mode: 'verify', timeoutMs: BAIT_TIMEOUT }); }
         catch (e) { vr = { state: 'fail' }; }
         if (vr.error) { aborted = vr.error; abortedAt = 'bait'; break; }
+        if (vr.state === 'fail') noteFail(fails, a, 'Verifikasi', vr);
         if (vr.state === 'limit' || vr.state === 'free') {
           mem.verified = true;
           mem.deleted = !!vr.deleted;
@@ -1312,6 +1443,7 @@ async function runBaitCycle(list, opts = {}) {
       catch (e) { res = { state: 'unknown' }; }
       if (res.error) { aborted = res.error; abortedAt = 'check'; break; }
       applyCheck(a, res);
+      noteFail(fails, a, 'Cek', res);
       checkDone++;
       if (res.state && res.state !== 'unknown') checkKnown++;
       const cl = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
@@ -1334,13 +1466,13 @@ async function runBaitCycle(list, opts = {}) {
     addHistory('bait', !baitFail && usable > 0,
       baitFail ? `${who} · ${abortReason(aborted)}${baitSum ? ` (${baitSum})` : ''}`
         : usable > 0 ? `${who} · ${baitSum}${baitTail}`
-        : `${who} · tidak ada akun yang terpancing (${baitSum || 'belum login / gagal'})${baitTail}`, baitStartedAt);
+        : `${who} · tidak ada akun yang terpancing (${baitSum || 'belum login / gagal'})${baitTail}`, baitStartedAt, { fails: fails.filter((f) => f.step !== 'Cek') });
     if (checkDone > 0 || abortedAt === 'check') {
       const chkSum = Object.entries(checkTally).map(([k, n]) => `${n} ${k}`).join(', ');
       const chkFail = abortedAt === 'check';
       addHistory('check', !chkFail && checkKnown > 0,
         chkFail ? `${who} · ${abortReason(aborted)}${chkSum ? ` (${chkSum})` : ''}` : `${who} · ${chkSum}`,
-        checkStartedAt || Date.now());
+        checkStartedAt || Date.now(), { fails: fails.filter((f) => f.step === 'Cek') });
     }
   }
   if (aborted) {
