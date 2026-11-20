@@ -854,20 +854,47 @@ function closeHistory() {
 function initTools() {
   const s = document.getElementById('summary');
   if (!s) return;
-  checkBtn = el('button', { type: 'button', class: 'tbtn primary', text: '⟳ Cek semua akun', onclick: checkAll });
+  checkBtn = el('button', { type: 'button', class: 'tbtn primary', text: '⟳ Cek akun', title: 'Cek semua akun', onclick: checkAll });
   autoSel = el('select', { class: 'tsel', 'aria-label': 'Cek otomatis', onchange: onAutoChange });
   for (const [m, label] of AUTO_OPTS) {
-    autoSel.append(el('option', { value: String(m), text: m ? `Auto cek: ${label}` : 'Auto cek: Mati' }));
+    autoSel.append(el('option', { value: String(m), text: m ? `⏱ ${label}` : '⏱ Mati' }));
   }
   autoSel.value = String(settings.autoMin);
-  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq', text: '🎣', title: 'Pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancing sekarang', onclick: baitNow });
-  baitBtn = el('button', { type: 'button', class: 'tbtn', onclick: toggleBait });
+  // 🎣 = pancing sekarang: harus DITAHAN 1 detik (anti kepencet). ON / OFF = sekali pencet.
+  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq hold', text: '🎣', title: 'Tahan 1 detik: pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancing sekarang (tahan 1 detik)' });
+  holdPress(baitRunBtn, 1000, baitNow, () => toast('Tahan tombol 🎣 selama 1 detik untuk memancing.'));
+  baitBtn = el('button', { type: 'button', class: 'tbtn baitsw', onclick: toggleBait });
   updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
-  const tools = el('div', { class: 'tools' }, checkBtn, baitRunBtn, autoSel, baitBtn);
+  const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn, baitBtn);
   s.after(tools);
   tools.after(autoHint);
   updateAutoHint();
+}
+
+// Tombol yang baru jalan kalau ditahan ms milidetik. Lepas / geser sebelum waktunya = batal (onShort dipanggil kalau cuma diketuk).
+function holdPress(btn, ms, onDone, onShort) {
+  let timer = null;
+  const stop = () => { if (timer) { clearTimeout(timer); timer = null; } btn.classList.remove('holding'); };
+  btn.addEventListener('pointerdown', () => {
+    if (btn.disabled) return;
+    stop();
+    btn.classList.add('holding');
+    timer = setTimeout(() => {
+      timer = null;
+      btn.classList.remove('holding');
+      try { if (navigator.vibrate) navigator.vibrate(30); } catch (_) { /* tidak apa-apa */ }
+      onDone();
+    }, ms);
+  });
+  for (const type of ['pointerup', 'pointercancel', 'pointerleave']) {
+    btn.addEventListener(type, () => {
+      const pending = timer !== null;
+      stop();
+      if (pending && type === 'pointerup' && onShort) onShort();
+    });
+  }
+  btn.addEventListener('contextmenu', (e) => e.preventDefault());
 }
 
 // Isi kolom di baris akun yang Free: kapan terakhir dicek (abu-abu kalau sudah lebih dari 30 menit)
@@ -1013,7 +1040,7 @@ function applyCheck(a, res) {
 
 function setCheckBtn(text) {
   if (!checkBtn) return;
-  checkBtn.textContent = text || '⟳ Cek semua akun';
+  checkBtn.textContent = text || '⟳ Cek akun';
   checkBtn.disabled = !!text;
   if (baitRunBtn) baitRunBtn.disabled = !!text;
 }
@@ -1156,8 +1183,9 @@ async function autoCheck() {
 // ---------- Pancingan ----------
 function updateBaitBtn() {
   if (!baitBtn) return;
-  baitBtn.textContent = `Pancingan: ${settings.baitOn ? 'ON' : 'OFF'}`;
-  baitBtn.classList.toggle('ok', settings.baitOn);
+  baitBtn.textContent = `Pancing ${settings.baitOn ? 'ON' : 'OFF'}`;
+  baitBtn.classList.toggle('on', settings.baitOn);
+  baitBtn.classList.toggle('off', !settings.baitOn);
 }
 
 function toggleBait() {
