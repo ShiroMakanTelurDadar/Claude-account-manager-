@@ -1,4 +1,4 @@
-// Menu Control (tombol di beranda): info akun, ganti kode, hapus akun, dan gambar / video latar halaman login.
+// Menu Control (tombol di beranda): info akun, ganti sandi, kode pemulihan, hapus akun, dan gambar / video latar halaman login.
 (() => {
   'use strict';
 
@@ -57,15 +57,36 @@
     if (!bodyEl) return;
     bodyEl.textContent = '';
 
-    // --- Akun ---
+    // --- Akun (2 baris: info, lalu 3 tombol kecil) ---
     const accMsg = msgEl();
     bodyEl.append(h('div', { class: 'csec' },
-      h('h3', { text: 'Akun' }),
       h('div', { class: 'crow' }, h('span', { text: 'Masuk sebagai' }), h('b', { text: Auth.user.name })),
-      cbtn('Ganti kode sandi', () => changeCode(accMsg), 'alt'),
-      cbtn('Keluar', () => Auth.logout()),
-      cbtn('Hapus akun ini', () => deleteAccount(accMsg), 'danger'),
+      h('div', { class: 'cacts' },
+        cbtn('Ganti sandi', () => changeCode(accMsg), 'alt'),
+        cbtn('Keluar', () => Auth.logout(), 'alt'),
+        cbtn('Hapus', () => deleteAccount(accMsg), 'danger'),
+      ),
       accMsg,
+    ));
+
+    // --- Kode pemulihan (selalu bisa dilihat di sini) ---
+    const recMsg = msgEl();
+    const codeEl = h('code', { class: 'rcode' });
+    let shown = false;
+    const eyeBtn = cbtn('Lihat', () => { shown = !shown; paint(); }, 'alt');
+    const paint = () => { codeEl.textContent = shown ? (Auth.rec || '-') : '••••-••••-••••'; eyeBtn.textContent = shown ? 'Sembunyi' : 'Lihat'; };
+    paint();
+    bodyEl.append(h('div', { class: 'csec' },
+      h('div', { class: 'crow' }, h('span', { text: 'Kode pemulihan' }), codeEl),
+      h('div', { class: 'cacts' },
+        eyeBtn,
+        cbtn('Salin', async () => {
+          try { await navigator.clipboard.writeText(Auth.rec || ''); say(recMsg, 'Kode disalin.', true); } catch { say(recMsg, 'Gagal menyalin. Catat manual.'); }
+        }, 'alt'),
+        cbtn('Buat baru', () => newRecovery(recMsg, () => { shown = true; paint(); }), 'danger'),
+      ),
+      h('p', { class: 'cnote', text: 'Dipakai di "Lupa sandi" untuk membuat sandi baru tanpa kehilangan data. Catat di tempat aman.' }),
+      recMsg,
     ));
 
     // --- Tampilan login ---
@@ -193,7 +214,7 @@
     });
   }
 
-  // ---------- Kode & hapus akun ----------
+  // ---------- Sandi & hapus akun ----------
   function modal(title, ...kids) {
     const m = h('div', { class: 'cmodal' }, h('div', { class: 'cbox' }, h('h3', { text: title }), ...kids));
     document.body.append(m);
@@ -202,42 +223,56 @@
 
   async function changeCode(out) {
     say(out, '');
-    const inp = h('input', { class: 'afld', type: 'password', placeholder: 'Kode sandi saat ini', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const num = { class: 'afld', type: 'password', maxlength: '12', autocomplete: 'off', inputmode: 'numeric', spellcheck: 'false' };
+    const cur = h('input', { ...num, placeholder: 'Sandi saat ini' });
+    const nw = h('input', { ...num, maxlength: '6', placeholder: 'Sandi baru (6 angka)' });
+    const nw2 = h('input', { ...num, maxlength: '6', placeholder: 'Ulangi sandi baru' });
     const err = msgEl();
-    const ok = cbtn('Ganti kode', async () => {
-      if (!inp.value) { say(err, 'Isi kode saat ini.'); return; }
+    const ok = cbtn('Simpan', async () => {
+      if (!cur.value) { say(err, 'Isi sandi saat ini.'); return; }
+      if (!/^\d{6}$/.test(nw.value)) { say(err, 'Sandi baru harus tepat 6 angka.'); return; }
+      if (nw.value !== nw2.value) { say(err, 'Sandi baru dan ulangi tidak sama.'); return; }
       ok.disabled = true;
       try {
-        const r = await Auth.changeCode(inp.value);
+        const r = await Auth.changeCode(cur.value, nw.value);
         if (r.err) { say(err, r.err); return; }
         m.remove();
-        showCode(r.code);
+        say(out, 'Sandi diganti.', true);
       } catch (e) { console.error(e); say(err, 'Terjadi kesalahan. Coba lagi.'); } finally { ok.disabled = false; }
     });
-    const m = modal('Ganti kode sandi', inp, err, h('div', { class: 'cbtns' }, cbtn('Batal', () => m.remove(), 'alt'), ok));
-    inp.focus();
+    const m = modal('Ganti sandi', cur, nw, nw2, err, h('div', { class: 'cbtns' }, cbtn('Batal', () => m.remove(), 'alt'), ok));
+    cur.focus();
   }
 
-  function showCode(code) {
-    const box = h('div', { class: 'codebox', text: code });
+  async function newRecovery(out, onDone) {
+    say(out, '');
+    const inp = h('input', { class: 'afld', type: 'password', placeholder: 'Sandi untuk konfirmasi', autocomplete: 'off', spellcheck: 'false' });
     const err = msgEl();
-    const m = modal('Kode sandi baru',
-      box,
-      h('p', { class: 'cnote' }, h('b', { text: 'Catat sekarang. ' }), 'Kode hanya tampil satu kali dan tidak bisa dilihat lagi.'),
-      err,
-      h('div', { class: 'cbtns' },
-        cbtn('Salin', async () => { try { await navigator.clipboard.writeText(code); say(err, 'Kode disalin.', true); } catch { say(err, 'Gagal menyalin. Catat manual.'); } }, 'alt'),
-        cbtn('Sudah dicatat', () => m.remove()),
-      ),
+    const ok = cbtn('Buat baru', async () => {
+      if (!inp.value) { say(err, 'Isi sandi.'); return; }
+      ok.disabled = true;
+      try {
+        const r = await Auth.newRecovery(inp.value);
+        if (r.err) { say(err, r.err); return; }
+        m.remove();
+        onDone();
+        say(out, 'Kode pemulihan baru dibuat. Catat sekarang.', true);
+      } catch (e) { console.error(e); say(err, 'Terjadi kesalahan. Coba lagi.'); } finally { ok.disabled = false; }
+    });
+    const m = modal('Buat kode pemulihan baru?',
+      h('p', { class: 'cnote', text: 'Kode pemulihan yang lama tidak berlaku lagi.' }),
+      inp, err,
+      h('div', { class: 'cbtns' }, cbtn('Batal', () => m.remove(), 'alt'), ok),
     );
+    inp.focus();
   }
 
   async function deleteAccount(out) {
     say(out, '');
-    const inp = h('input', { class: 'afld', type: 'password', placeholder: 'Kode sandi untuk konfirmasi', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const inp = h('input', { class: 'afld', type: 'password', placeholder: 'Sandi untuk konfirmasi', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
     const err = msgEl();
     const del = cbtn('Hapus permanen', async () => {
-      if (!inp.value) { say(err, 'Isi kode sandi.'); return; }
+      if (!inp.value) { say(err, 'Isi sandi.'); return; }
       del.disabled = true;
       try {
         const r = await Auth.deleteCurrent(inp.value);
