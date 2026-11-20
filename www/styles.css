@@ -522,15 +522,16 @@ header h1 { text-align: center; }
 .sg b { font-size: 14px; }
 
 /* Cek akun, waktu cek, pancingan: satu baris */
-.tools { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 40px auto; gap: 6px; margin: 0 4px 4px; }
+.tools { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 50px; gap: 6px; margin: 0 4px 4px; }
 .tools .tbtn, .tools .tsel { height: 38px; font-size: 12px; min-width: 0; padding-left: 8px; padding-right: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tools .tsel { padding-right: 22px; background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%; text-overflow: clip; }
-.tools .tbtn.sq { width: 40px; padding: 0; }
+.tools .tbtn.sq { width: 50px; padding: 0; font-size: 17px; }
 
-/* ON / OFF pancingan: tepi menyala tetap (tidak berkedip). Hijau = ON, merah = OFF */
-.tbtn.baitsw { font-weight: 700; border-width: 1.5px; }
-.tbtn.baitsw.on { color: #86efac; border-color: #4ade80; background: rgba(74, 222, 128, .09); box-shadow: 0 0 10px -3px rgba(74, 222, 128, .55); }
-.tbtn.baitsw.off { color: #fca5a5; border-color: #f87171; background: rgba(248, 113, 113, .09); box-shadow: 0 0 10px -3px rgba(248, 113, 113, .5); }
+/* Tombol 🎣: tepi tipis menyala tetap (tidak berkedip). Hijau = ON, merah = OFF */
+.tbtn.baitsw { border-width: 1px; }
+.tbtn.baitsw.on { border-color: rgba(74, 222, 128, .7); }
+.tbtn.baitsw.off { border-color: rgba(248, 113, 113, .7); }
+.tbtn.baitsw.busy { opacity: .5; }
 
 /* Tombol tahan 1 detik: isi terisi pelan selama ditahan */
 .tbtn.hold { position: relative; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
