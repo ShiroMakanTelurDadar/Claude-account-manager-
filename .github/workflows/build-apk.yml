@@ -57,24 +57,4 @@ jobs:
           sed -i "/defaultConfig {/a\        ndk { abiFilters 'arm64-v8a' }" app/build.gradle
           # Buang bahasa resource yang tidak dipakai dari library pihak ketiga
           sed -i "/defaultConfig {/a\        resConfigs 'en', 'id'" app/build.gradle
-          sed -i "/^dependencies {/a\    implementation 'org.mozilla.geckoview:geckoview-arm64-v8a:$GV'" app/build.gradle
-          # Kecilkan APK: libxul.so (~130 MB) dikompres di dalam APK, bukan disimpan mentah (tanpa ini APK ~300 MB).
-          sed -i "/^android {/a\    packagingOptions { jniLibs { useLegacyPackaging = true } }" app/build.gradle
-
-          mkdir -p app/src/main/java/com/local/claudeaccountmanager
-          cp ../native/MainActivity.java app/src/main/java/com/local/claudeaccountmanager/MainActivity.java
-          grep -n "geckoview\|abiFilters\|useLegacyPackaging\|resConfigs" app/build.gradle
-
-      - name: Pasang kunci debug tetap
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-        run: |
-          set -e
-          if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
-            echo "Secret DEBUG_KEYSTORE_BASE64 belum diisi di Settings > Secrets and variables > Actions."
-            exit 1
-          fi
-          mkdir -p "$HOME/.android"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > "$HOME/.android/debug.keystore"
-          # Cek kunci valid (alias androiddebugkey, password android); sidik jari dicetak untuk dibandingkan antar build
-          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey | grep -i
+          sed -i "/^dependencies {/a\    implementation
