@@ -1,11 +1,18 @@
 package com.local.claudeaccountmanager;
 
+import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorMatrix;
+import android.graphics.ColorMatrixColorFilter;
+import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -19,6 +26,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
@@ -594,9 +602,8 @@ public class MainActivity extends BridgeActivity {
             FrameLayout root = new FrameLayout(this);
             root.addView(view, new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            root.addView(buildHomeButton(), homeButtonParams());
-            root.addView(buildRefreshButton(), refreshButtonParams());
             setContentView(root);
+            buildFloatingMenu(root);
 
             loadWhenReady(url);
         }
@@ -611,60 +618,131 @@ public class MainActivity extends BridgeActivity {
             });
         }
 
-        // Tombol beranda melayang di tepi kiri. Menutup browser dan kembali ke aplikasi.
-        private TextView buildHomeButton() {
+        // ===== Tombol melayang gabungan (gaya AssistiveTouch iPhone) =====
+        // Satu tombol bulat kecil. Diketuk -> muncul tombol Home dan Refresh di sebelahnya.
+        // Bisa digeser ke mana saja dan menempel ke tepi kiri/kanan saat dilepas (posisi diingat).
+        // Kalau lama tidak disentuh, warnanya memudar jadi abu-abu (saturasi turun) dan agak transparan.
+        private static final long FAB_IDLE_MS = 3000L;    // diam selama ini -> saturasi turun
+        private static final long FAB_MENU_MS = 4500L;    // menu terbuka tanpa disentuh -> menutup sendiri
+        private static final float FAB_IDLE_SAT = 0.1f;   // 1 = warna penuh, 0 = abu-abu
+        private static final float FAB_IDLE_ALPHA = 0.6f;
+
+        private BubbleView fab;
+        private TextView fabHome, fabRefresh;
+        private boolean fabOpen = false;
+        private float fabSat = 1f;
+        private ValueAnimator satAnim;
+        private final Handler fabH = new Handler(Looper.getMainLooper());
+        private final Runnable fabIdle = new Runnable() {
+            @Override
+            public void run() {
+                if (fab == null) return;
+                if (fabOpen) {
+                    closeFabMenu();
+                    scheduleFabIdle(FAB_IDLE_MS);
+                    return;
+                }
+                animateFabSat(FAB_IDLE_SAT);
+                fab.animate().alpha(FAB_IDLE_ALPHA).setDuration(600).start();
+            }
+        };
+
+        // Tombol utama: kotak membulat gelap + cincin biru langit. Warna biru hilang saat saturasi diturunkan.
+        private static class BubbleView extends View {
+            private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final Paint layer = new Paint();
+            private final ColorMatrix cm = new ColorMatrix();
+            private final RectF rect = new RectF();
+
+            BubbleView(Context c) {
+                super(c);
+                float d = c.getResources().getDisplayMetrics().density;
+                fill.setStyle(Paint.Style.FILL);
+                fill.setColor(0xE6071524);
+                edge.setStyle(Paint.Style.STROKE);
+                edge.setStrokeWidth(1.2f * d);
+                edge.setColor(0x887DD3FC);
+                ring.setStyle(Paint.Style.STROKE);
+                ring.setStrokeWidth(2f * d);
+                ring.setColor(0xFF7DD3FC);
+                dot.setStyle(Paint.Style.FILL);
+                dot.setColor(0xFFBAE6FD);
+                setLayerType(LAYER_TYPE_HARDWARE, layer);
+            }
+
+            void setSaturation(float s) {
+                cm.setSaturation(s);
+                layer.setColorFilter(new ColorMatrixColorFilter(cm));
+                setLayerPaint(layer);
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                float w = getWidth(), h = getHeight();
+                float inset = edge.getStrokeWidth();
+                rect.set(inset, inset, w - inset, h - inset);
+                float r = Math.min(w, h) * 0.32f;
+                canvas.drawRoundRect(rect, r, r, fill);
+                canvas.drawRoundRect(rect, r, r, edge);
+                canvas.drawCircle(w / 2f, h / 2f, Math.min(w, h) * 0.26f, ring);
+                canvas.drawCircle(w / 2f, h / 2f, Math.min(w, h) * 0.09f, dot);
+            }
+        }
+
+        private TextView buildFabAction(String glyph, String desc, float textSize, int sizePx) {
             float d = getResources().getDisplayMetrics().density;
             TextView b = new TextView(this);
-            b.setText("⌂");
-            b.setTextSize(22f);
+            b.setText(glyph);
+            b.setTextSize(textSize);
             b.setTextColor(Color.WHITE);
             b.setGravity(Gravity.CENTER);
-            b.setAlpha(0.88f);
-            b.setElevation(12 * d);
+            b.setElevation(10 * d);
             GradientDrawable bg = new GradientDrawable();
             bg.setShape(GradientDrawable.OVAL);
-            bg.setColor(0xCC071524);
-            bg.setStroke((int) (1 * d), 0x667DD3FC);
+            bg.setColor(0xE6071524);
+            bg.setStroke((int) (1 * d), 0x887DD3FC);
             b.setBackground(bg);
-            b.setContentDescription("Kembali ke beranda aplikasi");
-            b.setOnClickListener(v -> finish());
+            b.setContentDescription(desc);
+            b.setVisibility(View.GONE);
+            b.setLayoutParams(new FrameLayout.LayoutParams(sizePx, sizePx));
             return b;
         }
 
-        private FrameLayout.LayoutParams homeButtonParams() {
-            float d = getResources().getDisplayMetrics().density;
-            int size = (int) (44 * d);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    size, size, Gravity.START | Gravity.CENTER_VERTICAL);
-            lp.leftMargin = (int) (6 * d);
-            return lp;
-        }
-
-        // Tombol refresh melayang. Saat tidak dipakai pudar (kontras rendah), bisa digeser ke mana saja.
-        private TextView buildRefreshButton() {
+        private void buildFloatingMenu(final FrameLayout root) {
             final float d = getResources().getDisplayMetrics().density;
-            final float idleAlpha = 0.3f;
-            final Handler h = new Handler(Looper.getMainLooper());
-            final TextView b = new TextView(this);
-            b.setText("↻");
-            b.setTextSize(20f);
-            b.setTextColor(0xFFB8C4D0);
-            b.setGravity(Gravity.CENTER);
-            b.setAlpha(idleAlpha);
-            b.setElevation(8 * d);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setShape(GradientDrawable.OVAL);
-            bg.setColor(0xAA2A3340);
-            bg.setStroke((int) (1 * d), 0x449AA7B5);
-            b.setBackground(bg);
-            b.setContentDescription("Muat ulang halaman");
-            final Runnable fade = new Runnable() {
-                @Override
-                public void run() {
-                    b.animate().alpha(idleAlpha).setDuration(400).start();
-                }
-            };
-            b.setOnTouchListener(new View.OnTouchListener() {
+            final int fabSize = (int) (48 * d);
+            final int btnSize = (int) (44 * d);
+
+            fabHome = buildFabAction("⌂", "Kembali ke beranda aplikasi", 22f, btnSize);
+            fabHome.setOnClickListener(v -> finish());
+
+            fabRefresh = buildFabAction("↻", "Muat ulang halaman", 20f, btnSize);
+            fabRefresh.setOnClickListener(v -> {
+                if (session != null) session.reload();
+                scheduleFabIdle(FAB_IDLE_MS);
+                // Putar sekali sebagai tanda, lalu menu menutup
+                fabRefresh.animate().rotationBy(360f).setDuration(400).withEndAction(new Runnable() {
+                    @Override
+                    public void run() {
+                        fabRefresh.setRotation(0f);
+                        closeFabMenu();
+                    }
+                }).start();
+            });
+
+            fab = new BubbleView(this);
+            fab.setElevation(12 * d);
+            fab.setContentDescription("Menu melayang: beranda dan muat ulang");
+            fab.setLayoutParams(new FrameLayout.LayoutParams(fabSize, fabSize));
+
+            root.addView(fabHome);
+            root.addView(fabRefresh);
+            root.addView(fab);   // paling atas
+
+            fab.setOnTouchListener(new View.OnTouchListener() {
                 private float downX, downY, startX, startY;
                 private boolean moved;
 
@@ -673,9 +751,8 @@ public class MainActivity extends BridgeActivity {
                     View parent = (View) v.getParent();
                     switch (e.getActionMasked()) {
                         case MotionEvent.ACTION_DOWN:
-                            h.removeCallbacks(fade);
+                            wakeFab();
                             v.animate().cancel();
-                            v.setAlpha(0.9f);
                             downX = e.getRawX();
                             downY = e.getRawY();
                             startX = v.getX();
@@ -685,7 +762,10 @@ public class MainActivity extends BridgeActivity {
                         case MotionEvent.ACTION_MOVE: {
                             float dx = e.getRawX() - downX;
                             float dy = e.getRawY() - downY;
-                            if (!moved && Math.abs(dx) + Math.abs(dy) > 10 * d) moved = true;
+                            if (!moved && Math.abs(dx) + Math.abs(dy) > 10 * d) {
+                                moved = true;
+                                if (fabOpen) closeFabMenu();
+                            }
                             if (moved && parent != null) {
                                 float nx = Math.max(0, Math.min(parent.getWidth() - v.getWidth(), startX + dx));
                                 float ny = Math.max(0, Math.min(parent.getHeight() - v.getHeight(), startY + dy));
@@ -695,33 +775,154 @@ public class MainActivity extends BridgeActivity {
                             return true;
                         }
                         case MotionEvent.ACTION_UP:
-                            if (!moved && session != null) session.reload();
-                            h.postDelayed(fade, 2500);
+                            if (moved) snapFab();
+                            else toggleFabMenu();
+                            scheduleFabIdle(fabOpen ? FAB_MENU_MS : FAB_IDLE_MS);
                             return true;
                         case MotionEvent.ACTION_CANCEL:
-                            h.postDelayed(fade, 2500);
+                            if (moved) snapFab();
+                            scheduleFabIdle(FAB_IDLE_MS);
                             return true;
                         default:
                             return false;
                     }
                 }
             });
-            return b;
+
+            // Posisi awal: dari yang tersimpan (tepi kiri/kanan + tinggi). Menunggu layout pertama selesai,
+            // karena sebelum itu lebar/tinggi layar masih 0.
+            root.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override
+                public void onLayoutChange(View v, int l, int t, int r, int b, int oldL, int oldT, int oldR, int oldB) {
+                    if (r - l > 0 && b - t > 0 && fab != null && fab.getWidth() > 0) {
+                        root.removeOnLayoutChangeListener(this);
+                        placeFab();
+                        scheduleFabIdle(FAB_IDLE_MS);
+                    }
+                }
+            });
         }
 
-        private FrameLayout.LayoutParams refreshButtonParams() {
+        private void placeFab() {
+            if (fab == null) return;
+            View parent = (View) fab.getParent();
+            if (parent == null || parent.getWidth() == 0) return;
             float d = getResources().getDisplayMetrics().density;
-            int size = (int) (40 * d);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                    size, size, Gravity.START | Gravity.CENTER_VERTICAL);
-            lp.leftMargin = (int) (8 * d);
-            lp.topMargin = (int) (96 * d);
-            return lp;
+            SharedPreferences sp = getSharedPreferences("floating_menu", Context.MODE_PRIVATE);
+            boolean right = sp.getBoolean("right", false);
+            float yf = sp.getFloat("y", 0.5f);
+            float margin = 4 * d;
+            float x = right ? parent.getWidth() - fab.getWidth() - margin : margin;
+            float y = Math.max(0, Math.min(parent.getHeight() - fab.getHeight(), yf * parent.getHeight() - fab.getHeight() / 2f));
+            fab.setX(x);
+            fab.setY(y);
+        }
+
+        // Setelah digeser: menempel ke tepi terdekat (kiri atau kanan) dan menyimpan posisinya
+        private void snapFab() {
+            if (fab == null) return;
+            View parent = (View) fab.getParent();
+            if (parent == null) return;
+            float d = getResources().getDisplayMetrics().density;
+            float margin = 4 * d;
+            boolean right = fab.getX() + fab.getWidth() / 2f > parent.getWidth() / 2f;
+            float tx = right ? parent.getWidth() - fab.getWidth() - margin : margin;
+            fab.animate().x(tx).setDuration(220).setInterpolator(new DecelerateInterpolator()).start();
+            float yf = parent.getHeight() > 0 ? (fab.getY() + fab.getHeight() / 2f) / parent.getHeight() : 0.5f;
+            getSharedPreferences("floating_menu", Context.MODE_PRIVATE).edit()
+                    .putBoolean("right", right).putFloat("y", yf).apply();
+        }
+
+        private void scheduleFabIdle(long ms) {
+            fabH.removeCallbacks(fabIdle);
+            fabH.postDelayed(fabIdle, ms);
+        }
+
+        // Disentuh: warna kembali penuh dan tidak transparan
+        private void wakeFab() {
+            fabH.removeCallbacks(fabIdle);
+            animateFabSat(1f);
+            if (fab != null) fab.animate().alpha(1f).setDuration(150).start();
+        }
+
+        private void animateFabSat(float to) {
+            if (fab == null) return;
+            if (satAnim != null) satAnim.cancel();
+            if (Math.abs(fabSat - to) < 0.001f) return;
+            satAnim = ValueAnimator.ofFloat(fabSat, to);
+            satAnim.setDuration(to > fabSat ? 150 : 900);
+            satAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override
+                public void onAnimationUpdate(ValueAnimator a) {
+                    fabSat = (Float) a.getAnimatedValue();
+                    if (fab != null) fab.setSaturation(fabSat);
+                }
+            });
+            satAnim.start();
+        }
+
+        private void toggleFabMenu() {
+            if (fabOpen) closeFabMenu();
+            else openFabMenu();
+        }
+
+        // Tombol Home dan Refresh keluar di samping tombol utama, ke sisi yang lebih lapang
+        private void openFabMenu() {
+            if (fabOpen || fab == null) return;
+            View parent = (View) fab.getParent();
+            if (parent == null) return;
+            float d = getResources().getDisplayMetrics().density;
+            float gap = 8 * d;
+            float bs = fabHome.getLayoutParams().width;
+            boolean toRight = fab.getX() + fab.getWidth() / 2f < parent.getWidth() / 2f;
+            float cy = fab.getY() + (fab.getHeight() - bs) / 2f;
+            float fromX = fab.getX() + (fab.getWidth() - bs) / 2f;
+            float x1 = toRight ? fab.getX() + fab.getWidth() + gap : fab.getX() - gap - bs;
+            float x2 = toRight ? x1 + bs + gap : x1 - bs - gap;
+            float maxX = parent.getWidth() - bs;
+            x1 = Math.max(0, Math.min(maxX, x1));
+            x2 = Math.max(0, Math.min(maxX, x2));
+            fabOpen = true;
+            showFabAction(fabHome, fromX, x1, cy, 0);
+            showFabAction(fabRefresh, fromX, x2, cy, 50);
+        }
+
+        private void showFabAction(TextView b, float fromX, float toX, float y, long delay) {
+            b.animate().cancel();
+            b.setX(fromX);
+            b.setY(y);
+            b.setAlpha(0f);
+            b.setScaleX(0.4f);
+            b.setScaleY(0.4f);
+            b.setVisibility(View.VISIBLE);
+            b.animate().x(toX).alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(delay).setDuration(200)
+                    .setInterpolator(new DecelerateInterpolator()).start();
+        }
+
+        private void closeFabMenu() {
+            if (!fabOpen || fab == null) return;
+            fabOpen = false;
+            float toX = fab.getX() + (fab.getWidth() - fabHome.getLayoutParams().width) / 2f;
+            hideFabAction(fabHome, toX, 0);
+            hideFabAction(fabRefresh, toX, 30);
+        }
+
+        private void hideFabAction(final TextView b, float toX, long delay) {
+            b.animate().cancel();
+            b.animate().x(toX).alpha(0f).scaleX(0.4f).scaleY(0.4f).setStartDelay(delay).setDuration(160)
+                    .withEndAction(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!fabOpen) b.setVisibility(View.GONE);
+                        }
+                    }).start();
         }
 
         @Override
         public void onBackPressed() {
-            if (canGoBack && session != null) {
+            if (fabOpen) {
+                closeFabMenu();
+            } else if (canGoBack && session != null) {
                 session.goBack();
             } else {
                 finish();
@@ -730,6 +931,8 @@ public class MainActivity extends BridgeActivity {
 
         @Override
         protected void onDestroy() {
+            fabH.removeCallbacksAndMessages(null);
+            if (satAnim != null) satAnim.cancel();
             if (session != null) {
                 session.close();
                 session = null;
