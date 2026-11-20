@@ -813,9 +813,9 @@ function initHistory() {
     el('button', { type: 'button', class: 'btn-g hclear', text: '⬇ Ekspor data', onclick: () => { closeHistory(); exportData(); } }),
     el('button', { type: 'button', class: 'btn-g hclear', text: '⬆ Impor data', onclick: () => { closeHistory(); importData(); } }),
   );
-  // Ruang kosong 1/3 tinggi slide + gambar di bawahnya (ujung atas memudar lewat CSS mask)
+  // Wallpaper di bawah slide (1/3 tinggi, di belakang tombol; ujung atas memudar lewat CSS mask)
   histImgEl = el('div', { class: 'himg', 'aria-hidden': 'true' }, el('img', { alt: '', draggable: 'false' }));
-  histDrawer.append(el('div', { class: 'hspace', 'aria-hidden': 'true' }), histImgEl);
+  histDrawer.prepend(histImgEl);
   window.addEventListener('cam:histbg', applyHistImg);
   applyHistImg();
   document.body.append(histBackdrop, histDrawer);
