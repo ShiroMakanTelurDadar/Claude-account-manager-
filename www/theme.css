@@ -1,0 +1,54 @@
+/* ===== Tema =====
+   Semua warna biru/hitam di styles.css dan auth.css memakai variabel. Tiap tema cukup menimpa variabel di bawah.
+   Tema "default" memakai nilai bawaan di :root (styles.css). */
+
+/* ---- Pilihan tema di Control ---- */
+.cthemes { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 2px; }
+.ctheme {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; width: 68px; padding: 0;
+  background: none; border: 0; color: var(--text); font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.ctheme i {
+  position: relative; display: block; width: 56px; height: 56px; border-radius: 12px;
+  border: 2px solid var(--line); background: var(--pal); transition: transform .15s, border-color .2s, box-shadow .2s;
+}
+.ctheme:active i { transform: scale(.94); }
+.ctheme.on i { border-color: var(--sky); box-shadow: 0 0 0 3px rgba(var(--sky-rgb), .22); }
+.ctheme.on i::after {
+  content: "✓"; position: absolute; right: 3px; bottom: 1px; font-size: 13px; font-weight: 900; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .9);
+}
+
+/* ---- Tema Oracle: merah, kuning, hitam ---- */
+html[data-theme="oracle"] {
+  --bg: #060202;
+  --bg-top: #1c0707;
+  --bg-end: #020101;
+  --panel-a: #1b0a08;
+  --panel-b: #0a0504;
+  --ink-rgb: 10, 5, 4;
+  --text: #fff3e6;
+  --muted: #b39d8e;
+  --line: rgba(251, 191, 36, .2);
+  --sky: #fbbf24;
+  --sky-lt: #fde68a;
+  --sky-rgb: 251, 191, 36;
+  --cyan: #ef4444;
+  --cyan-rgb: 239, 68, 68;
+  --blue: #dc2626;
+  --blue-rgb: 220, 38, 38;
+  --amber: #fde047;
+  --on-grad: #180503;
+  --grad: linear-gradient(135deg, #dc2626 0%, #f97316 52%, #fbbf24 100%);
+  /* bubble akun: hitam > merah > kuning */
+  --acc-bg: linear-gradient(135deg, #090403 0%, #1f0605 24%, #7c1710 60%, #b9770e 100%);
+  --a-black: #0a0504;
+  --a-grad-alt: #0a0504;
+}
+html[data-theme="oracle"] .tbtn.primary,
+html[data-theme="oracle"] .tbtn.primary:active { background: var(--grad); }
+html[data-theme="oracle"] .tbtn.primary { box-shadow: 0 8px 20px -10px rgba(239, 68, 68, .8); }
+html[data-theme="oracle"] .btn { box-shadow: 0 8px 22px -8px rgba(239, 68, 68, .6), inset 0 1px 0 rgba(255, 255, 255, .4); }
+html[data-theme="oracle"] .cswitch input:checked + i { background: #f59e0b; }
+html[data-theme="oracle"] .cropzoom,
+html[data-theme="oracle"] .achk input { accent-color: #ef4444; }
+html[data-theme="oracle"] .acc { border-color: rgba(251, 191, 36, .22); }
