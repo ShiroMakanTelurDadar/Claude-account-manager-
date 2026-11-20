@@ -44,8 +44,7 @@ const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // l
 const BAIT_INTERVAL = 3 * 3600 * 1000;
 const BAIT_TIMEOUT = 85000;      // ms: batas waktu satu langkah pancingan per akun (muat halaman + tunggu balasan Claude)
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
-let baitBtn = null;              // tombol ON / OFF pancingan
-let baitRunBtn = null;           // tombol 🎣 pancing sekarang
+let baitRunBtn = null;           // tombol 🎣: ketuk = ON / OFF pancingan, tahan 1 detik = pancing sekarang
 
 // ---------- Continue di latar belakang dan pantau "selesai berpikir" ----------
 const CONTINUE_TIMEOUT = 50000;  // ms: batas waktu kirim Continue di sesi tersembunyi (termasuk muat + refresh halaman)
@@ -861,12 +860,12 @@ function initTools() {
   }
   autoSel.value = String(settings.autoMin);
   // 🎣 = pancing sekarang: harus DITAHAN 1 detik (anti kepencet). ON / OFF = sekali pencet.
-  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq hold', text: '🎣', title: 'Tahan 1 detik: pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancing sekarang (tahan 1 detik)' });
-  holdPress(baitRunBtn, 1000, baitNow, () => toast('Tahan tombol 🎣 selama 1 detik untuk memancing.'));
-  baitBtn = el('button', { type: 'button', class: 'tbtn baitsw', onclick: toggleBait });
+  // 🎣 satu tombol: ketuk sekali = pancingan ON / OFF (tepi hijau / merah), tahan 1 detik = pancing sekarang
+  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq hold baitsw', text: '🎣', title: 'Ketuk: pancingan ON / OFF. Tahan 1 detik: pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancingan: ketuk untuk ON atau OFF, tahan 1 detik untuk memancing sekarang' });
+  holdPress(baitRunBtn, 1000, () => { if (checking) toast('Sedang mengecek akun, tunggu sebentar.'); else baitNow(); }, toggleBait);
   updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
-  const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn, baitBtn);
+  const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn);
   s.after(tools);
   tools.after(autoHint);
   updateAutoHint();
@@ -1042,7 +1041,7 @@ function setCheckBtn(text) {
   if (!checkBtn) return;
   checkBtn.textContent = text || '⟳ Cek akun';
   checkBtn.disabled = !!text;
-  if (baitRunBtn) baitRunBtn.disabled = !!text;
+  if (baitRunBtn) baitRunBtn.classList.toggle('busy', !!text);
 }
 
 // Perbarui tombol ⟳ di semua kartu (aktif / sedang mengecek)
@@ -1182,10 +1181,10 @@ async function autoCheck() {
 
 // ---------- Pancingan ----------
 function updateBaitBtn() {
-  if (!baitBtn) return;
-  baitBtn.textContent = `Pancing ${settings.baitOn ? 'ON' : 'OFF'}`;
-  baitBtn.classList.toggle('on', settings.baitOn);
-  baitBtn.classList.toggle('off', !settings.baitOn);
+  if (!baitRunBtn) return;
+  baitRunBtn.classList.toggle('on', settings.baitOn);
+  baitRunBtn.classList.toggle('off', !settings.baitOn);
+  baitRunBtn.setAttribute('aria-pressed', settings.baitOn ? 'true' : 'false');
 }
 
 function toggleBait() {
