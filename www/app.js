@@ -109,6 +109,8 @@ let histLog = [];
 let histDrawer = null;           // elemen slide riwayat
 let histBackdrop = null;
 let histListEl = null;
+let histImgEl = null;            // gambar di bawah slide riwayat (1/3 tinggi slide)
+let histImgUrl = null;           // object URL gambar buatan pengguna
 
 async function loadHistory() {
   try {
@@ -811,10 +813,26 @@ function initHistory() {
     el('button', { type: 'button', class: 'btn-g hclear', text: '⬇ Ekspor data', onclick: () => { closeHistory(); exportData(); } }),
     el('button', { type: 'button', class: 'btn-g hclear', text: '⬆ Impor data', onclick: () => { closeHistory(); importData(); } }),
   );
+  // Ruang kosong 1/3 tinggi slide + gambar di bawahnya (ujung atas memudar lewat CSS mask)
+  histImgEl = el('div', { class: 'himg', 'aria-hidden': 'true' }, el('img', { alt: '', draggable: 'false' }));
+  histDrawer.append(el('div', { class: 'hspace', 'aria-hidden': 'true' }), histImgEl);
+  window.addEventListener('cam:histbg', applyHistImg);
+  applyHistImg();
   document.body.append(histBackdrop, histDrawer);
   const menu = document.getElementById('menuBtn');
   if (menu) menu.addEventListener('click', openHistory);
   renderHistory();
+}
+
+// Gambar bawah slide riwayat: buatan pengguna (Control > Tampilan > Slide riwayat) atau gambar bawaan
+async function applyHistImg() {
+  if (!histImgEl) return;
+  const img = histImgEl.firstChild;
+  let rec = null;
+  try { rec = window.Auth && Auth.media ? await Auth.media.get('hist') : null; } catch {}
+  if (histImgUrl) { URL.revokeObjectURL(histImgUrl); histImgUrl = null; }
+  if (rec && rec.blob) { histImgUrl = URL.createObjectURL(rec.blob); img.src = histImgUrl; }
+  else img.src = (window.Auth && Auth.media && Auth.media.HIST_DEFAULT_URL) || 'assets/history-default.jpg';
 }
 
 function openHistory() {
