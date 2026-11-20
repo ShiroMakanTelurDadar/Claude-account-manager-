@@ -7,7 +7,8 @@
 //   reset     : limit sudah selesai, contoh "Stopped by a usage limit. You can try again now" + tombol Try again / Continue
 //   resume    : ada tombol "Continue" / "Try again" di chat (tombol Continue di aplikasi jadi hijau)
 //   idle      : kolom chat siap dan tidak ada yang berjalan
-// Di halaman login, skrip ini juga mengisi email akun secara otomatis.
+// Halaman login dikenali dari teks header (LOGIN_HEAD_RE). Lalu kolom email dicari lewat teks "Masukkan email Anda" (EMAIL_PROMPT_RE)
+// dan diisi dengan email akun dari aplikasi. Hanya diisi (paste), tidak ditekan Continue: link login dari email tetap dibuka manual.
 // Di halaman chat, kalau aplikasi mengirim command (tombol Continue), skrip menekan Continue / Try again atau mengetik command lalu mengirimnya.
 // Semua pola ada di bagian atas supaya gampang disesuaikan kalau tampilan claude.ai berubah.
 (function () {
@@ -29,6 +30,9 @@
 
   // Halaman dan kolom login
   const LOGIN_PATH_RE = /^\/(login|logout|signup|sign-in)/i;
+  // Teks header yang menandakan halaman login, dan teks di dekat kolom email
+  const LOGIN_HEAD_RE = /AI untuk pemecahan masalah|AI for problem[- ]solving/i;
+  const EMAIL_PROMPT_RE = /Masukkan email Anda|Enter your email/i;
   const EMAIL_SEL = 'input[type="email"], input[name="email"], input[autocomplete="email"], input[autocomplete="username"]';
   const COMPOSER_SEL = 'div[contenteditable="true"], textarea, [data-testid="chat-input"]';
   const SEND_SEL = 'button[aria-label*="send" i], button[aria-label*="kirim" i]';
@@ -38,7 +42,7 @@
   let lastLimit = '';
   let lastState = '';
   let loginBusy = false;
-  let lastEmailAt = 0;
+  const filledEls = new WeakSet();   // kolom yang sudah diisi, supaya tidak menimpa ketikan pengguna
   let cmdBusy = false;     // sedang menjalankan command dari aplikasi
   let cmdFinished = false; // command sudah dijalankan (atau memang tidak ada)
   let cmdText = null;      // null = belum ditanyakan ke aplikasi
@@ -90,7 +94,15 @@
     return false;
   }
 
+  // Teks header halaman (tagline login ada di sini), atau 600 huruf pertama bila tidak ada elemen header
+  function headerText() {
+    let t = '';
+    for (const e of document.querySelectorAll('header, [role="banner"], h1, h2')) t += ' ' + (e.innerText || e.textContent || '');
+    return t || (document.body.innerText || '').slice(0, 600);
+  }
+
   function isLoginPage() {
+    if (LOGIN_HEAD_RE.test(headerText())) return true;
     if (LOGIN_PATH_RE.test(location.pathname)) return true;
     return !!pick(EMAIL_SEL) && !pick(COMPOSER_SEL);
   }
@@ -123,18 +135,39 @@
     }, 500);
   }
 
+  const TEXT_INPUT_SEL = 'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"])';
+
+  // Kolom email: cari lewat teks "Masukkan email Anda" (placeholder, label, atau teks di dekat kolom), lalu selector biasa
+  function findEmailInput() {
+    for (const el of document.querySelectorAll(TEXT_INPUT_SEL)) {
+      const hint = (el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('aria-label') || '');
+      if (EMAIL_PROMPT_RE.test(hint) && visible(el)) return el;
+    }
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = walker.nextNode())) {
+      const t = (n.nodeValue || '').trim();
+      if (!t || t.length > 80 || !EMAIL_PROMPT_RE.test(t) || !visible(n.parentElement)) continue;
+      let box = n.parentElement;
+      for (let i = 0; box && i < 5; i++, box = box.parentElement) {
+        const inp = box.querySelector(TEXT_INPUT_SEL);
+        if (inp && visible(inp)) return inp;
+      }
+    }
+    return pick(EMAIL_SEL);
+  }
+
   async function loginAssist() {
     if (loginBusy) return;
     loginBusy = true;
     try {
       const help = await browser.runtime.sendMessage({ type: 'loginHelp' });
       if (!help) return;
-      // Layar email: isi email akun lalu lanjut. Jeda 90 detik supaya email login tidak terkirim berulang.
-      const emailEl = pick(EMAIL_SEL);
-      if (emailEl && help.email && !emailEl.value && Date.now() - lastEmailAt > 90000) {
-        lastEmailAt = Date.now();
+      // Layar email: isi email akun (paste saja, tidak menekan tombol lanjut)
+      const emailEl = findEmailInput();
+      if (emailEl && help.email && !emailEl.value && !filledEls.has(emailEl)) {
+        filledEls.add(emailEl);
         fill(emailEl, String(help.email));
-        submitFor(emailEl, EMAIL_BTN_RE);
       }
     } catch (e) { /* abaikan */ } finally { loginBusy = false; }
   }
