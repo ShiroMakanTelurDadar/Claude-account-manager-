@@ -4,7 +4,7 @@
 // - Tiap pengguna punya ID acak tersembunyi. ID ini dipakai untuk nama penyimpanan dan ikut dalam hash,
 //   jadi username yang sama yang dibuat ulang tidak akan tertukar dengan data lama.
 // - Percobaan salah dibatasi (kunci sementara yang makin lama).
-// - Lupa kode: kode lama tidak bisa dilihat lagi. Kode baru dibuat setelah verifikasi sidik jari / PIN HP.
+// - Lupa kode: kode lama tidak bisa dilihat lagi. Satu-satunya cara: hapus akun itu lalu buat ulang.
 (() => {
   'use strict';
 
@@ -122,7 +122,7 @@
     if (!NAME_RE.test(name)) return { err: 'Username 3-20 karakter: huruf, angka, titik, atau garis bawah.' };
     if (findUser(name)) return { err: 'Username sudah dipakai di aplikasi ini.' };
     if (users.length >= MAX_USERS) return { err: `Aplikasi ini sudah berisi ${MAX_USERS} akun. Hapus salah satu lewat menu Control (setelah login) untuk membuat yang baru.` };
-    const u = { id: hex(rand(16)), name, key: name.toLowerCase(), created: Date.now(), bio: false, bioAsked: false, lastLogin: 0, resetAt: 0 };
+    const u = { id: hex(rand(16)), name, key: name.toLowerCase(), created: Date.now(), lastLogin: 0, resetAt: 0 };
     const code = await setCode(u);
     // Pengguna pertama mengambil alih data lama (dari versi tanpa login) supaya tidak hilang.
     if (!users.length) {
@@ -164,18 +164,6 @@
     return { err: left2 ? `${GENERIC_ERR} Dikunci ${secs(left2)} detik.` : `${GENERIC_ERR} Sisa percobaan: ${FREE_TRIES - u.fails}.` };
   }
 
-  // ---------- Verifikasi perangkat (sidik jari / PIN HP) ----------
-  const DA = () => P.DeviceAuth;
-  async function deviceAvailable() {
-    try { return !!(DA() && (await DA().status()).available); } catch { return false; }
-  }
-  async function deviceVerify(title, subtitle) {
-    try {
-      await DA().authenticate({ title, subtitle });
-      return true;
-    } catch { return false; }
-  }
-
   // ---------- DOM kecil ----------
   function h(tag, props = {}, ...kids) {
     const e = document.createElement(tag);
@@ -209,21 +197,11 @@
   const ready = new Promise((r) => { resolveReady = r; });
   const Auth = {
     ready, media, native, MAX_USERS, NAME_RE,
-    user: null,          // {id, name, bio}
+    user: null,          // {id, name}
     notice: '',          // pesan sesudah login (mis. kode pernah direset)
     key: (name) => (Auth.user ? `u_${Auth.user.id}_${name}` : name),
-    deviceAvailable, deviceVerify,
     logout() { location.reload(); },
     userCount: () => users.length,
-    async setBio(on) {
-      const u = users.find((x) => x.id === Auth.user.id);
-      if (!u) return false;
-      if (on && !(await deviceVerify('Aktifkan masuk cepat', 'Verifikasi dengan sidik jari / PIN HP'))) return false;
-      u.bio = !!on; u.bioAsked = true;
-      await saveUsers();
-      Auth.user.bio = u.bio;
-      return true;
-    },
     // Ganti kode: wajib kode lama. Mengembalikan {code} atau {err}.
     async changeCode(oldCode) {
       const u = users.find((x) => x.id === Auth.user.id);
@@ -236,15 +214,6 @@
         await saveUsers();
         return { err: 'Kode saat ini salah.' };
       }
-      const code = await setCode(u);
-      await saveUsers();
-      return { code };
-    },
-    // Kode baru lewat verifikasi sidik jari / PIN HP, tanpa kode lama. Mengembalikan {code} atau {err}.
-    async newCodeByDevice() {
-      const u = users.find((x) => x.id === Auth.user.id);
-      if (!u) return { err: 'Akun tidak ditemukan.' };
-      if (!(await deviceVerify('Buat kode baru', 'Verifikasi dengan sidik jari / PIN HP'))) return { err: 'Verifikasi dibatalkan atau gagal.' };
       const code = await setCode(u);
       await saveUsers();
       return { code };
@@ -299,14 +268,12 @@
     eye.textContent = show ? 'Sembunyi' : 'Lihat';
   } });
   const loginBtn = gbtn('Login', doLogin);
-  const bioBtn = gbtn('Masuk dengan sidik jari / PIN HP', doBio, true);
-  bioBtn.hidden = true;
   const sLogin = h('section', { class: 'scr', 'data-s': 'login' },
     h('h2', { text: 'Login' }),
     inUser,
     h('div', { class: 'afrow' }, inCode, eye),
     h('div', { class: 'aside' }, link('Lupa kode?', () => go('forgot'))),
-    loginBtn, bioBtn,
+    loginBtn,
   );
 
   // Layar: buat akun
@@ -341,14 +308,12 @@
   // Layar: lupa kode
   const inForgot = field('aForgot', 'Username', 'text');
   const inWipe = field('aWipe', 'Ketik username lagi untuk konfirmasi', 'text');
-  const forgotBtn = gbtn('Verifikasi & buat kode baru', doForgot);
   const wipeBtn = gbtn('Hapus akun ini & buat ulang', doWipe, true);
-  const forgotInfo = h('p', { class: 'ahint' });
+  const forgotInfo = h('p', { class: 'ahint', text: 'Kode lama tidak bisa dilihat lagi karena tidak disimpan. Satu-satunya cara: hapus akun ini (datanya ikut terhapus) lalu buat ulang.' });
   const sForgot = h('section', { class: 'scr', 'data-s': 'forgot' },
     h('h2', { text: 'Lupa kode' }),
     inForgot,
     forgotInfo,
-    forgotBtn,
     inWipe, wipeBtn,
   );
 
@@ -382,8 +347,8 @@
     say('');
     for (const s of panel.querySelectorAll('.scr')) s.hidden = s.dataset.s !== name;
     for (const s of panel.querySelectorAll('.abq')) s.hidden = s.dataset.for !== name;
-    if (name === 'login') { inCode.value = ''; inCode.type = 'password'; eye.textContent = 'Lihat'; refreshBio(); }
-    if (name === 'forgot') prepForgot();
+    if (name === 'login') { inCode.value = ''; inCode.type = 'password'; eye.textContent = 'Lihat'; }
+    if (name === 'forgot' && !inForgot.value) inForgot.value = inUser.value;
     if (name === 'create') inNew.value = '';
   }
 
@@ -398,12 +363,6 @@
     for (const s of panel.querySelectorAll('.abq')) s.hidden = true;
   }
 
-  async function refreshBio() {
-    bioBtn.hidden = true;
-    if (!users.some((u) => u.bio)) return;
-    if (await deviceAvailable()) bioBtn.hidden = screen !== 'login';
-  }
-
   async function doLogin() {
     const name = inUser.value.trim();
     const code = inCode.value;
@@ -412,24 +371,11 @@
     try {
       const r = await tryLogin(name, code);
       if (r.err) { say(r.err); return; }
-      await finish(r.user, true);
+      await finish(r.user);
     } catch (e) {
       console.error(e);
       say('Terjadi kesalahan. Coba lagi.');
     } finally { busy(loginBtn, false); }
-  }
-
-  async function doBio() {
-    let u = findUser(inUser.value);
-    if (!u) {
-      const list = users.filter((x) => x.bio);
-      if (list.length === 1) u = list[0];
-      else { say('Isi username dulu, lalu tekan tombol ini.'); return; }
-    }
-    if (!u.bio) { say('Masuk cepat belum diaktifkan untuk akun ini. Login dengan kode dulu, lalu aktifkan di menu Control.'); return; }
-    const ok = await deviceVerify('Masuk sebagai ' + u.name, 'Verifikasi dengan sidik jari / PIN HP');
-    if (!ok) { say('Verifikasi dibatalkan atau gagal.'); return; }
-    await finish(u, false);
   }
 
   async function doCreate() {
@@ -445,34 +391,6 @@
     } finally { busy(createBtn, false); }
   }
 
-  async function prepForgot() {
-    const avail = await deviceAvailable();
-    forgotInfo.textContent = avail
-      ? 'Kode lama tidak bisa dilihat lagi karena tidak disimpan. Verifikasi dengan sidik jari / PIN HP, lalu aplikasi membuat kode baru. Data akun tetap ada.'
-      : 'HP ini tidak punya sidik jari atau kunci layar yang bisa dipakai, jadi kode baru tidak bisa dibuat dengan aman. Satu-satunya cara: hapus akun ini (datanya ikut terhapus) lalu buat ulang.';
-    forgotBtn.hidden = !avail;
-    inWipe.hidden = avail;
-    wipeBtn.hidden = avail;
-    if (!inForgot.value) inForgot.value = inUser.value;
-  }
-
-  async function doForgot() {
-    const u = findUser(inForgot.value);
-    if (!u) { say('Username tidak ditemukan di aplikasi ini.'); return; }
-    if (!(await deviceVerify('Buat kode baru untuk ' + u.name, 'Verifikasi dengan sidik jari / PIN HP'))) { say('Verifikasi dibatalkan atau gagal.'); return; }
-    busy(forgotBtn, true);
-    try {
-      const code = await setCode(u);
-      u.resetAt = Date.now();
-      await saveUsers();
-      inUser.value = u.name;
-      showCode('Kode baru kamu', code);
-    } catch (e) {
-      console.error(e);
-      say('Gagal membuat kode baru. Coba lagi.');
-    } finally { busy(forgotBtn, false); }
-  }
-
   async function doWipe() {
     const u = findUser(inForgot.value);
     if (!u) { say('Username tidak ditemukan di aplikasi ini.'); return; }
@@ -483,24 +401,13 @@
     say('Akun dihapus. Buat akun baru dengan username yang sama atau yang lain.', true);
   }
 
-  async function finish(u, byCode) {
+  async function finish(u) {
     const notice = u.resetAt && u.resetAt > (u.lastLogin || 0)
       ? `Kode akun ini direset pada ${new Date(u.resetAt).toLocaleString('id-ID')}.` : '';
     u.lastLogin = Date.now();
     await saveUsers();
-    Auth.user = { id: u.id, name: u.name, bio: !!u.bio };
+    Auth.user = { id: u.id, name: u.name };
     Auth.notice = notice;
-    // Tawarkan masuk cepat sekali saja, sesudah login dengan kode
-    if (byCode && !u.bio && !u.bioAsked && (await deviceAvailable())) {
-      u.bioAsked = true;
-      await saveUsers();
-      if (confirm('Aktifkan masuk cepat dengan sidik jari / PIN HP untuk akun ini?\n\nKode sandi tetap berlaku. Ini bisa diubah di menu Control.')) {
-        if (await deviceVerify('Aktifkan masuk cepat', 'Verifikasi dengan sidik jari / PIN HP')) {
-          u.bio = true; Auth.user.bio = true;
-          await saveUsers();
-        }
-      }
-    }
     root.classList.add('out');
     document.body.classList.remove('locked');
     setTimeout(() => root.remove(), 450);
@@ -510,7 +417,7 @@
   // Enter = login / aksi utama layar aktif
   root.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    ({ login: doLogin, create: doCreate, forgot: doForgot }[screen] || (() => {}))();
+    ({ login: doLogin, create: doCreate }[screen] || (() => {}))();
   });
 
   (async function start() {
