@@ -10,7 +10,9 @@
   if (window.__limitwatch) return;
   window.__limitwatch = true;
 
-  const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|hit your [^\n]{0,40}limit/i;
+  const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|keep chatting with claude pro|free messages return|keep going now with pro|free usage ran out|usage ran out|hit your [^\n]{0,40}limit/i;
+  // Potongan teks yang mungkin bagian dari banner limit (teks banner sering terpecah per elemen, mis. link "messages")
+  const FRAG_RE = /out of|usage|limit|upgrade|chatting|return|ran out|free|kehabisan|batas/i;
   const RESUME_BTN_RE = /^(continue|try again|retry|lanjutkan|coba lagi)$/i;
   const CHALLENGE_RE = /just a moment|attention required|verify you are human|checking your browser|performing security verification/i;
   const SEND_LABEL_RE = /^(send|send message|kirim|kirim pesan)/i;
@@ -66,28 +68,43 @@
     return buttons().some((b) => /^continue with (google|email|apple|sso)/i.test(txt(b)));
   }
 
-  // Banner / popup limit. Teks di dalam pesan chat (balasan Claude atau pesan kita) diabaikan.
+  // Banner / popup limit. Cocokkan teks gabungan elemen (bukan per node teks), karena banner terpecah:
+  // "You are out of free " + <a>messages</a> + " until 5:20 AM". Teks di dalam pesan chat diabaikan.
+  const CHAT_SEL = '[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [class*="font-user-message"], [data-is-streaming]';
+  const HAS_TIME = /\d{1,2}[:.]\d{2}/;
   function limitText() {
     if (!document.body) return '';
+    if (!LIMIT_RE.test(document.body.textContent || '')) return '';
+    const found = [];
+    const seen = new Set();
     const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let n;
     while ((n = w.nextNode())) {
       const v = n.nodeValue;
-      if (!v || v.length > 400 || !LIMIT_RE.test(v)) continue;
+      if (!v || v.length > 300 || !FRAG_RE.test(v)) continue;
       let e = n.parentElement;
       if (!e || !vis(e)) continue;
-      if (e.closest('[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [class*="font-user-message"], [data-is-streaming]')) continue;
-      // jam reset sering ada di elemen tetangga: naik beberapa level sampai ada jam di teksnya
-      for (let i = 0; i < 3 && e.parentElement && !/\d{1,2}[:.]\d{2}/.test(txt(e)) && txt(e.parentElement).length < 300; i++) e = e.parentElement;
-      return txt(e).slice(0, 300);
+      for (let i = 0; i < 5 && e; i++, e = e.parentElement) {
+        const t = txt(e);
+        if (t.length > 300) break;
+        if (!LIMIT_RE.test(t)) continue;
+        if (seen.has(e)) break;
+        seen.add(e);
+        if (!e.closest(CHAT_SEL)) found.push(t);
+        break;
+      }
     }
-    return '';
+    if (!found.length) return '';
+    // utamakan teks yang memuat jam reset (banner dan popup bisa muncul bersamaan)
+    return (found.find((t) => HAS_TIME.test(t)) || found[0]).slice(0, 300);
   }
 
   const hasMessages = () => !!document.querySelector('[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [data-test-render-count]');
 
   function readState() {
     const lt = limitText();
+    // Tombol Continue / Try again terlihat dan teks limit tanpa jam reset (mis. "Paused when your free usage ran out"): sudah bisa dilanjutkan
+    if (lt && !(HAS_TIME.test(lt) || !resumeBtn())) return { state: 'resume', text: '' };
     if (lt) return { state: 'limit', text: lt };
     if (isLoggedOut()) return { state: 'loggedout', text: '' };
     if (stopBtn()) return { state: 'busy', text: '' };
