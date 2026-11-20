@@ -25,7 +25,7 @@ Main features:
 - **Automatic continue.** When the limit time ends, the app continues the next pending project by itself (only while the app is open).
 - **Check accounts.** The "Cek semua akun" button checks every account in the background. The ⟳ button on an account checks only that account.
 - **Automatic check.** Choose Off, 30 minutes, 1 hour, 2 hours, or 5 hours. The default is 1 hour.
-- **Browser buttons.** Inside the account browser there is a home button (back to the app) and a faded refresh button. The refresh button can be dragged anywhere and becomes clear while you touch it.
+- **Browser floating button.** Inside the account browser there is one small floating button (like iPhone AssistiveTouch). Tap it to reveal the Home (back to the app) and Refresh buttons. It can be dragged anywhere, snaps to the left or right edge, and remembers its position. When left alone for a few seconds, its color fades to gray and it becomes slightly transparent; touching it restores the color.
 - **Notes.** Optional colored notes for each account.
 - **Backup.** Export all accounts as text and import them back.
 - **Notification.** A system notification is scheduled for the reset time, even when the app is closed.
@@ -133,7 +133,7 @@ Fitur utama:
 - **Continue otomatis.** Saat waktu limit selesai, aplikasi melanjutkan project tertunda berikutnya sendiri (hanya saat aplikasi terbuka).
 - **Cek akun.** Tombol "Cek semua akun" mengecek semua akun di belakang layar. Tombol ⟳ di sebuah akun hanya mengecek akun itu.
 - **Cek otomatis.** Pilih Mati, 30 menit, 1 jam, 2 jam, atau 5 jam. Bawaannya 1 jam.
-- **Tombol di browser.** Di dalam browser akun ada tombol home (kembali ke aplikasi) dan tombol refresh yang pudar. Tombol refresh bisa digeser ke mana saja dan jadi jelas saat disentuh.
+- **Tombol melayang di browser.** Di dalam browser akun ada satu tombol melayang kecil (seperti AssistiveTouch iPhone). Ketuk untuk memunculkan tombol Home (kembali ke aplikasi) dan Refresh. Bisa digeser ke mana saja, menempel ke tepi kiri atau kanan, dan posisinya diingat. Kalau beberapa detik tidak disentuh, warnanya memudar jadi abu-abu dan sedikit transparan; disentuh lagi warnanya kembali.
 - **Note.** Catatan berwarna per akun (opsional).
 - **Backup.** Ekspor semua akun sebagai teks dan impor kembali.
 - **Notifikasi.** Notifikasi sistem dijadwalkan di jam reset, walau aplikasi tertutup.
