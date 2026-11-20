@@ -71,7 +71,12 @@ body.locked > #empty { display: none; }
 .scr[hidden], .abq[hidden], .gbtn[hidden], .afld[hidden] { display: none; }
 @keyframes aIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
-.scr h2 { margin: 0 0 2px; text-align: center; font-size: 26px; font-weight: 500; letter-spacing: -.01em; color: #fff; }
+/* Judul layar (LOGIN dll): font, berat, dan jarak huruf sama dengan tulisan WELCOME */
+.scr h2 {
+  margin: 0 0 2px; text-align: center; text-transform: uppercase;
+  font-family: inherit; font-size: 22px; font-weight: 300; letter-spacing: .38em; padding-left: .38em;
+  color: #fff; text-shadow: 0 2px 18px rgba(0, 0, 0, .55);
+}
 
 .afld {
   width: 100%; background: transparent; border: 0; border-bottom: 1.5px solid rgba(255, 255, 255, .5); border-radius: 0;
@@ -123,12 +128,13 @@ body.locked > #empty { display: none; }
 }
 .auth-foot b { font-size: 14px; font-weight: 800; letter-spacing: .04em; color: #fff; }
 .auth-foot span { font-size: 11.5px; color: rgba(255, 255, 255, .7); }
+.auth-foot .thanks { margin-top: 3px; font-size: 11px; font-style: italic; letter-spacing: .03em; color: rgba(255, 255, 255, .55); }
 
 @media (max-height: 640px) {
   .auth-card { --ch: min(calc(100dvh - 120px), calc((100vw - 64px) * 16 / 9), 620px); }
   .auth-logo { width: 40px; height: 40px; }
   .scr { gap: 8px; }
-  .scr h2 { font-size: 24px; margin: 0; }
+  .scr h2 { font-size: 20px; margin: 0; padding-left: .38em; }
 }
 
 /* ===== Control (di beranda) ===== */
