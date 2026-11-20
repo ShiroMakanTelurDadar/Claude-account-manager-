@@ -417,7 +417,7 @@ public class MainActivity extends BridgeActivity {
                                     String hu = msg.optString("url", "");
                                     String ht = msg.optString("title", "");
                                     if (hu.length() > 90) hu = hu.substring(0, 90);
-                                    if (ht.length() > 60) ht = ht.substring(0, 60);
+                                    if (ht.length() > 150) ht = ht.substring(0, 150);
                                     sHelloInfo = hu + " | judul: " + ht + (msg.optBoolean("challenge", false) ? " | PEMERIKSAAN KEAMANAN" : "");
                                 } else if ("commandDone".equals(type)) {
                                     sPendingCommand = "";
