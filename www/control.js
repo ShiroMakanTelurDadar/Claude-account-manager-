@@ -7,6 +7,8 @@
   if (!Auth || !btn) return;
 
   const MAX_VIDEO = 30 * 1024 * 1024;   // 30 MB
+  const HIST_FRAC = 0.5;                // tinggi gambar slide riwayat = setengah tinggi layar (samakan dengan --himg-h di styles.css)
+  let flashBg = '', flashHist = '';     // pesan yang tampil setelah menu dibangun ulang
   const h = (tag, props = {}, ...kids) => {
     const e = document.createElement(tag);
     for (const [k, v] of Object.entries(props)) {
@@ -23,7 +25,7 @@
     return e;
   };
 
-  let backdrop = null, sheet = null, bodyEl = null, prevUrl = null;
+  let backdrop = null, sheet = null, bodyEl = null, prevUrl = null, prevHistUrl = null;
 
   // ---------- Sheet ----------
   function close() {
@@ -33,6 +35,7 @@
     const s = sheet, b = backdrop;
     sheet = backdrop = bodyEl = null;
     if (prevUrl) { URL.revokeObjectURL(prevUrl); prevUrl = null; }
+    if (prevHistUrl) { URL.revokeObjectURL(prevHistUrl); prevHistUrl = null; }
     setTimeout(() => { s.remove(); b.remove(); }, 300);
   }
 
@@ -104,23 +107,76 @@
     } else pv.append(h('img', { src: url, alt: '', draggable: 'false' }));
 
     const bgMsg = msgEl();
+    if (flashBg) { say(bgMsg, flashBg, true); flashBg = ''; }
     const file = h('input', { type: 'file', accept: 'image/*,video/*', hidden: true });
     file.addEventListener('change', async () => {
       const f = file.files && file.files[0];
       file.value = '';
       if (f) await pick(f, bgMsg);
     });
+    // --- Gambar slide riwayat (satu bubble dengan Tampilan login) ---
+    const hrec = await Auth.media.get('hist');
+    if (!bodyEl) return;
+    if (prevHistUrl) URL.revokeObjectURL(prevHistUrl);
+    prevHistUrl = hrec && hrec.blob ? URL.createObjectURL(hrec.blob) : null;
+    const hpv = h('div', { class: 'cprev fade', style: `aspect-ratio:${histRatio().toFixed(3)}` },
+      h('img', { src: prevHistUrl || Auth.media.HIST_DEFAULT_URL, alt: '', draggable: 'false' }));
+    const hMsg = msgEl();
+    if (flashHist) { say(hMsg, flashHist, true); flashHist = ''; }
+    const hfile = h('input', { type: 'file', accept: 'image/*', hidden: true });
+    hfile.addEventListener('change', async () => {
+      const f = hfile.files && hfile.files[0];
+      hfile.value = '';
+      if (f) await pickHist(f, hMsg);
+    });
+
     bodyEl.append(h('div', { class: 'csec' },
-      h('h3', { text: 'Tampilan login' }),
+      h('h3', { text: 'Tampilan' }),
+      h('p', { class: 'csub', text: 'Halaman login' }),
       h('div', { class: 'crow' },
         pv,
         h('p', { class: 'cnote', text: 'Gambar atau video latar di halaman login. Rasio 9:16 (potret). Gambar bisa digeser dan di-zoom sebelum disimpan.' }),
       ),
       file,
       cbtn('Pilih gambar / video', () => file.click()),
-      rec ? cbtn('Kembalikan bawaan', async () => { await Auth.media.clear(); say(bgMsg, 'Dikembalikan ke gambar bawaan.', true); await build(); }, 'alt') : null,
+      rec ? cbtn('Kembalikan bawaan', async () => { await Auth.media.clear(); flashBg = 'Dikembalikan ke gambar bawaan.'; await build(); }, 'alt') : null,
       bgMsg,
+      h('div', { class: 'cdiv' }),
+      h('p', { class: 'csub', text: 'Slide riwayat' }),
+      h('div', { class: 'crow' },
+        hpv,
+        h('p', { class: 'cnote', text: 'Gambar di bagian bawah slide riwayat (setengah tinggi slide, tombol tampil di atasnya). Ujung atasnya otomatis memudar menyatu dengan warna dasar. Gambar bisa digeser dan di-zoom sebelum disimpan.' }),
+      ),
+      hfile,
+      cbtn('Pilih gambar', () => hfile.click()),
+      hrec ? cbtn('Kembalikan bawaan', async () => { await Auth.media.clear('hist'); notifyHist(); flashHist = 'Dikembalikan ke gambar bawaan.'; await build(); }, 'alt') : null,
+      hMsg,
     ));
+  }
+
+  // Rasio kotak gambar slide riwayat (lebar slide : sepertiga tinggi layar), dibatasi supaya crop tetap nyaman
+  function histRatio() {
+    const w = Math.min(window.innerWidth * 0.46, 360);
+    const hh = window.innerHeight * HIST_FRAC;
+    return Math.min(1.1, Math.max(0.45, w / hh));
+  }
+  const notifyHist = () => window.dispatchEvent(new Event('cam:histbg'));
+
+  async function pickHist(f, out) {
+    say(out, '');
+    try {
+      if (!f.type.startsWith('image/')) { say(out, 'Untuk slide riwayat, file harus gambar.'); return; }
+      const ratio = histRatio();
+      const blob = await cropImage(f, { ratio, outW: 720, title: 'Atur gambar slide riwayat' });
+      if (!blob) return;
+      await Auth.media.set({ kind: 'image', blob, type: blob.type }, 'hist');
+      notifyHist();
+      flashHist = 'Gambar slide riwayat disimpan.';
+      await build();
+    } catch (e) {
+      console.error(e);
+      say(out, 'Gagal menyimpan. Coba file lain.');
+    }
   }
 
   // ---------- Pilih media ----------
@@ -130,13 +186,13 @@
       if (f.type.startsWith('video/')) {
         if (f.size > MAX_VIDEO) { say(out, 'Video terlalu besar (maks 30 MB).'); return; }
         await Auth.media.set({ kind: 'video', blob: f, type: f.type });
-        say(out, 'Video latar disimpan.', true);
+        flashBg = 'Video latar disimpan.';
         await build();
       } else if (f.type.startsWith('image/')) {
         const blob = await cropImage(f);
         if (!blob) return;
         await Auth.media.set({ kind: 'image', blob, type: blob.type });
-        say(out, 'Gambar latar disimpan.', true);
+        flashBg = 'Gambar latar disimpan.';
         await build();
       } else say(out, 'File harus gambar atau video.');
     } catch (e) {
@@ -145,10 +201,13 @@
     }
   }
 
-  // Crop 9:16: geser dengan jari, zoom dengan slider. Mengembalikan Blob JPEG atau null bila dibatalkan.
-  function cropImage(file) {
+  // Crop dengan rasio bebas (bawaan 9:16): geser dengan jari, zoom dengan slider. Mengembalikan Blob JPEG atau null bila dibatalkan.
+  function cropImage(file, opt = {}) {
+    const ratio = opt.ratio || 9 / 16;
+    const outW = opt.outW || Auth.media.W;
+    const title = opt.title || 'Atur gambar latar (9:16)';
     return new Promise((resolve) => {
-      const VW = 216, VH = 384;
+      const VW = 216, VH = Math.round(VW / ratio);
       const url = URL.createObjectURL(file);
       const img = new Image();
       img.onerror = () => { URL.revokeObjectURL(url); alert('Gambar tidak bisa dibaca.'); resolve(null); };
@@ -190,7 +249,7 @@
         const save = h('button', { type: 'button', class: 'cbtn', text: 'Simpan', onclick: () => {
           clamp();
           const out = document.createElement('canvas');
-          out.width = Auth.media.W; out.height = Auth.media.H;
+          out.width = outW; out.height = Math.round(outW / ratio);
           const k = out.width / VW;
           const w = img.width * base * zoom * k, hh = img.height * base * zoom * k;
           const c = out.getContext('2d');
@@ -201,8 +260,8 @@
         const cancel = h('button', { type: 'button', class: 'cbtn alt', text: 'Batal', onclick: () => done(null) });
         const modal = h('div', { class: 'cmodal' },
           h('div', { class: 'cbox' },
-            h('h3', { text: 'Atur gambar latar (9:16)' }),
-            h('div', { class: 'cropwrap' }, h('div', { class: 'cropview' }, cv)),
+            h('h3', { text: title }),
+            h('div', { class: 'cropwrap' }, h('div', { class: 'cropview', style: `height:${VH}px` }, cv)),
             zoomEl,
             h('div', { class: 'cbtns' }, cancel, save),
           ),
