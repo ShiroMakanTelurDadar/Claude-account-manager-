@@ -4,6 +4,8 @@ import android.animation.ValueAnimator;
 import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -29,6 +31,7 @@ import android.view.ViewGroup;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.JSArray;
@@ -227,6 +230,7 @@ public class MainActivity extends BridgeActivity {
         // Command dari tombol Continue aplikasi. Dikirim ke chat oleh ekstensi, sekali saja (berlaku 3 menit).
         private static volatile String sPendingCommand = "";
         private static volatile long sPendingCommandAt = 0;
+        private static volatile long sPasteReqAt = 0;   // waktu tombol Paste email ditekan; content script mengambilnya lewat "pasteCheck"
 
         // Pengecekan latar belakang: selama sCheckAccountId tidak null, laporan halaman dicatat di sini
         private static volatile String sCheckAccountId = null;
@@ -410,6 +414,16 @@ public class MainActivity extends BridgeActivity {
                                     // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
                                     o.put("wait", sCheckAccountId != null && !sReady);
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
+                                    out = new GeckoResult<>();
+                                    out.complete(o);
+                                } else if ("pasteCheck".equals(type)) {
+                                    // Tombol Paste email ditekan: beri email akun sekali saja (tidak untuk sesi pengecekan latar belakang)
+                                    JSONObject o = new JSONObject();
+                                    boolean fresh = System.currentTimeMillis() - sPasteReqAt < 5000L;
+                                    boolean give = fresh && sCheckAccountId == null;
+                                    if (give) sPasteReqAt = 0;
+                                    o.put("email", give ? sCurrentEmail : "");
+                                    o.put("paste", give);
                                     out = new GeckoResult<>();
                                     out.complete(o);
                                 } else if ("hello".equals(type)) {
@@ -689,6 +703,7 @@ public class MainActivity extends BridgeActivity {
 
         private BubbleView fab;
         private TextView fabHome, fabRefresh;
+        private View fabPaste;
         private boolean fabOpen = false;
         private float fabSat = 1f;
         private ValueAnimator satAnim;
@@ -752,6 +767,35 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+        // Ikon papan klip (Paste): digambar sendiri supaya warnanya sama dengan tombol lain
+        private static class PasteIconView extends View {
+            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final RectF r = new RectF();
+
+            PasteIconView(Context c) {
+                super(c);
+                float d = c.getResources().getDisplayMetrics().density;
+                p.setStyle(Paint.Style.STROKE);
+                p.setStrokeWidth(1.8f * d);
+                p.setStrokeCap(Paint.Cap.ROUND);
+                p.setColor(Color.WHITE);
+            }
+
+            @Override
+            protected void onDraw(Canvas canvas) {
+                float w = getWidth(), h = getHeight();
+                float u = Math.min(w, h);
+                r.set(w / 2f - u * 0.20f, h / 2f - u * 0.22f, w / 2f + u * 0.20f, h / 2f + u * 0.26f);
+                canvas.drawRoundRect(r, u * 0.06f, u * 0.06f, p);
+                // penjepit di atas
+                r.set(w / 2f - u * 0.10f, h / 2f - u * 0.30f, w / 2f + u * 0.10f, h / 2f - u * 0.15f);
+                canvas.drawRoundRect(r, u * 0.05f, u * 0.05f, p);
+                // dua garis teks
+                canvas.drawLine(w / 2f - u * 0.10f, h / 2f, w / 2f + u * 0.10f, h / 2f, p);
+                canvas.drawLine(w / 2f - u * 0.10f, h / 2f + u * 0.12f, w / 2f + u * 0.05f, h / 2f + u * 0.12f, p);
+            }
+        }
+
         private TextView buildFabAction(String glyph, String desc, float textSize, int sizePx) {
             float d = getResources().getDisplayMetrics().density;
             TextView b = new TextView(this);
@@ -793,13 +837,46 @@ public class MainActivity extends BridgeActivity {
                 }).start();
             });
 
+            fabPaste = new PasteIconView(this);
+            fabPaste.setElevation(10 * d);
+            GradientDrawable pbg = new GradientDrawable();
+            pbg.setShape(GradientDrawable.OVAL);
+            pbg.setColor(0xE6071524);
+            pbg.setStroke((int) (1 * d), 0x887DD3FC);
+            fabPaste.setBackground(pbg);
+            fabPaste.setContentDescription("Tempel email akun");
+            fabPaste.setVisibility(View.GONE);
+            fabPaste.setLayoutParams(new FrameLayout.LayoutParams(btnSize, btnSize));
+            fabPaste.setOnClickListener(v -> {
+                String em = sCurrentEmail == null ? "" : sCurrentEmail;
+                if (em.isEmpty()) {
+                    Toast.makeText(this, "Email akun belum diisi. Isi di detail akun.", Toast.LENGTH_SHORT).show();
+                } else {
+                    try {
+                        ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        if (cb != null) cb.setPrimaryClip(ClipData.newPlainText("email", em));   // cadangan kalau kolom tidak terisi otomatis
+                    } catch (Exception ignored) {
+                    }
+                    sPasteReqAt = System.currentTimeMillis();   // content script mengisi kolom yang sedang aktif
+                    Toast.makeText(this, "Email ditempel: " + em, Toast.LENGTH_SHORT).show();
+                }
+                scheduleFabIdle(FAB_IDLE_MS);
+                fabH.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        closeFabMenu();
+                    }
+                }, 250);
+            });
+
             fab = new BubbleView(this);
             fab.setElevation(12 * d);
-            fab.setContentDescription("Menu melayang: beranda dan muat ulang");
+            fab.setContentDescription("Menu melayang: beranda, muat ulang, tempel email");
             fab.setLayoutParams(new FrameLayout.LayoutParams(fabSize, fabSize));
 
             root.addView(fabHome);
             root.addView(fabRefresh);
+            root.addView(fabPaste);
             root.addView(fab);   // paling atas
 
             fab.setOnTouchListener(new View.OnTouchListener() {
@@ -926,50 +1003,58 @@ public class MainActivity extends BridgeActivity {
             else openFabMenu();
         }
 
-        // Tombol Home dan Refresh keluar di samping tombol utama, ke sisi yang lebih lapang
+        // Tiga tombol keluar melingkari tombol utama, berurutan:
+        //   1. Home    -> ke atas
+        //   2. Refresh -> ke samping (ke kanan kalau tombol utama di kiri, ke kiri kalau di kanan)
+        //   3. Paste   -> ke bawah
         private void openFabMenu() {
             if (fabOpen || fab == null) return;
             View parent = (View) fab.getParent();
             if (parent == null) return;
             float d = getResources().getDisplayMetrics().density;
-            float gap = 8 * d;
+            float gap = 10 * d;
             float bs = fabHome.getLayoutParams().width;
+            float dist = fab.getWidth() / 2f + gap + bs / 2f;   // jarak pusat tombol utama ke pusat tombol kecil
             boolean toRight = fab.getX() + fab.getWidth() / 2f < parent.getWidth() / 2f;
-            float cy = fab.getY() + (fab.getHeight() - bs) / 2f;
-            float fromX = fab.getX() + (fab.getWidth() - bs) / 2f;
-            float x1 = toRight ? fab.getX() + fab.getWidth() + gap : fab.getX() - gap - bs;
-            float x2 = toRight ? x1 + bs + gap : x1 - bs - gap;
+            float cx = fab.getX() + fab.getWidth() / 2f - bs / 2f;   // posisi kiri-atas tombol kecil saat di pusat
+            float cy = fab.getY() + fab.getHeight() / 2f - bs / 2f;
             float maxX = parent.getWidth() - bs;
-            x1 = Math.max(0, Math.min(maxX, x1));
-            x2 = Math.max(0, Math.min(maxX, x2));
+            float maxY = parent.getHeight() - bs;
+            float upY = Math.max(0, Math.min(maxY, cy - dist));
+            float downY = Math.max(0, Math.min(maxY, cy + dist));
+            float sideX = Math.max(0, Math.min(maxX, toRight ? cx + dist : cx - dist));
             fabOpen = true;
-            showFabAction(fabHome, fromX, x1, cy, 0);
-            showFabAction(fabRefresh, fromX, x2, cy, 50);
+            showFabAction(fabHome, cx, cy, cx, upY, 0);
+            showFabAction(fabRefresh, cx, cy, sideX, cy, 70);
+            showFabAction(fabPaste, cx, cy, cx, downY, 140);
         }
 
-        private void showFabAction(TextView b, float fromX, float toX, float y, long delay) {
+        private void showFabAction(View b, float fromX, float fromY, float toX, float toY, long delay) {
             b.animate().cancel();
             b.setX(fromX);
-            b.setY(y);
+            b.setY(fromY);
             b.setAlpha(0f);
             b.setScaleX(0.4f);
             b.setScaleY(0.4f);
             b.setVisibility(View.VISIBLE);
-            b.animate().x(toX).alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(delay).setDuration(200)
+            b.animate().x(toX).y(toY).alpha(1f).scaleX(1f).scaleY(1f).setStartDelay(delay).setDuration(220)
                     .setInterpolator(new DecelerateInterpolator()).start();
         }
 
         private void closeFabMenu() {
             if (!fabOpen || fab == null) return;
             fabOpen = false;
-            float toX = fab.getX() + (fab.getWidth() - fabHome.getLayoutParams().width) / 2f;
-            hideFabAction(fabHome, toX, 0);
-            hideFabAction(fabRefresh, toX, 30);
+            float bs = fabHome.getLayoutParams().width;
+            float cx = fab.getX() + fab.getWidth() / 2f - bs / 2f;
+            float cy = fab.getY() + fab.getHeight() / 2f - bs / 2f;
+            hideFabAction(fabPaste, cx, cy, 0);
+            hideFabAction(fabRefresh, cx, cy, 30);
+            hideFabAction(fabHome, cx, cy, 60);
         }
 
-        private void hideFabAction(final TextView b, float toX, long delay) {
+        private void hideFabAction(final View b, float toX, float toY, long delay) {
             b.animate().cancel();
-            b.animate().x(toX).alpha(0f).scaleX(0.4f).scaleY(0.4f).setStartDelay(delay).setDuration(160)
+            b.animate().x(toX).y(toY).alpha(0f).scaleX(0.4f).scaleY(0.4f).setStartDelay(delay).setDuration(160)
                     .withEndAction(new Runnable() {
                         @Override
                         public void run() {
