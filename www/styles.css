@@ -555,3 +555,29 @@ header { position: relative; display: flex; justify-content: space-between; min-
 header h1 { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); font-size: 17px; text-align: center; pointer-events: none; }
 header .ctlbtn { padding: 0 8px; }
 body > header > h1 { font-size: 16px; }
+
+/* ---- Riwayat: item bisa diketuk, detail penyebab gagal ---- */
+.hitem.tap { cursor: pointer; -webkit-user-select: none; user-select: none; }
+.hitem.tap:active { background: rgba(125, 211, 252, .12); }
+.hmore { margin-top: 4px; font-size: 10px; color: var(--muted); }
+.hdmodal {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  padding: 18px; background: rgba(2, 6, 12, .66);
+}
+.hdbox {
+  width: 100%; max-width: 420px; max-height: 82vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 14px; border-radius: 18px; border: 1px solid var(--line);
+  background: linear-gradient(180deg, #0b1a2a, #060d16); box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .9);
+}
+.hdhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 16px; }
+.hdbody { margin: 8px 0 4px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+.hdgrp { margin-top: 10px; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: rgba(125, 211, 252, .05); }
+.hdlbl { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--sky); margin-top: 6px; }
+.hdlbl:first-child { margin-top: 0; }
+.hdtxt { margin: 2px 0 0; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+.hdtech {
+  margin: 8px 0 0; padding: 8px; border-radius: 8px; background: rgba(0, 0, 0, .35); color: var(--muted);
+  font: 11px/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.hdclose { width: 100%; margin-top: 12px; }
+.hbadge.badx { color: #fca5a5; background: rgba(248, 113, 113, .14); }
