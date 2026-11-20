@@ -292,6 +292,23 @@
     }, 15000);
   }
 
+  // ---------- Tombol Paste email (tombol melayang aplikasi) ----------
+  // Aplikasi menandai permintaan paste; skrip ini menanyakannya tiap 600 ms dan mengisi kolom yang sedang aktif.
+  function pasteTarget() {
+    const a = document.activeElement;
+    if (a && a !== document.body && vis(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return a;
+    return [...document.querySelectorAll('input[type="email"]')].find(vis) || composer();
+  }
+  function startPasteWatcher() {
+    setInterval(async () => {
+      if (document.hidden) return;
+      const r = await send({ type: 'pasteCheck' });
+      if (!r || !r.paste || !r.email) return;
+      const t = pasteTarget();
+      if (t) { t.focus(); setValue(t, r.email); }
+    }, 600);
+  }
+
   async function main() {
     // Tanda hidup: aplikasi tahu skrip ini benar-benar jalan di halaman (dipakai untuk penjelasan kalau gagal)
     send({ type: 'hello', url: location.href, title: document.title || '', challenge: isChallenge() });
@@ -307,6 +324,7 @@
     if (help.email) fillEmail(help.email);
     startReporting();
     if (help.command) sendCommand(help.command);
+    startPasteWatcher();
   }
 
   main().catch((e) => { send({ type: 'hello', url: location.href, title: 'error: ' + ((e && e.message) || e), challenge: false }); });
