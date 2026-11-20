@@ -1,10 +1,12 @@
 // Sistem login lokal (tanpa server).
 // - Banyak pengguna dalam satu aplikasi (MAX_USERS). Data tiap pengguna disimpan terpisah di perangkat.
-// - Kode sandi dibuat acak oleh aplikasi dan hanya ditampilkan sekali. Yang disimpan hanya hash (PBKDF2), bukan kodenya.
+// - Sandi 6 angka dibuat pengguna sendiri (bisa diganti di menu Control). Yang disimpan hanya hash (PBKDF2), bukan sandinya.
 // - Tiap pengguna punya ID acak tersembunyi. ID ini dipakai untuk nama penyimpanan dan ikut dalam hash,
 //   jadi username yang sama yang dibuat ulang tidak akan tertukar dengan data lama.
 // - Percobaan salah dibatasi (kunci sementara yang makin lama).
-// - Lupa kode: kode lama tidak bisa dilihat lagi. Satu-satunya cara: hapus akun itu lalu buat ulang.
+// - Kode pemulihan (12 huruf/angka) dibuat otomatis, bisa dilihat di Control, dan dipakai di "Lupa sandi" untuk membuat sandi baru tanpa kehilangan data.
+//   Kode disimpan terenkripsi (AES-GCM, kunci dari sandi) dan hash-nya disimpan untuk verifikasi. Kalau kode pemulihan juga hilang: hapus akun.
+// - Lupa sandi: sandi lama tidak bisa dilihat lagi. Satu-satunya cara: hapus akun itu lalu buat ulang.
 (() => {
   'use strict';
 
@@ -16,7 +18,9 @@
   const MAX_USERS = 3;
   const PBKDF2_ITER = 200000;
   const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // 32 huruf/angka, tanpa O 0 I 1 supaya tidak salah baca
-  const CODE_LEN = 7;                                     // 7 x 5 bit = 35 bit acak. Makin panjang makin aman (12 = 60 bit).
+  const REC_LEN = 12;                                     // 12 x 5 bit = 60 bit acak
+  const PIN_RE = /^\d{6}$/;                               // sandi baru: tepat 6 angka
+  const PIN_ERR = 'Sandi harus tepat 6 angka.';
   const FREE_TRIES = 5;                                   // percobaan salah sebelum dikunci
   const LOCK_BASE = 30000;                                // ms, dikali 2 setiap percobaan salah berikutnya
   const LOCK_MAX = 15 * 60000;
@@ -74,11 +78,11 @@
   const rand = (n) => crypto.getRandomValues(new Uint8Array(n));
   const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
 
-  function genCode() {
-    const bytes = rand(CODE_LEN);
-    let s = '';
-    for (const b of bytes) s += ALPHABET[b & 31];        // 256 habis dibagi 32, jadi tidak bias
-    return CODE_LEN > 8 ? s.match(/.{1,4}/g).join('-') : s;
+  function genRecCode() {
+    const bytes = rand(REC_LEN);
+    let c = '';
+    for (const b of bytes) c += ALPHABET[b & 31];        // 256 habis dibagi 32, jadi tidak bias
+    return c.match(/.{4}/g).join('-');
   }
   const normCode = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
@@ -95,6 +99,35 @@
     return d === 0;
   }
 
+  // ---------- Kode pemulihan ----------
+  async function aesKey(pin, u) {
+    const base = await crypto.subtle.importKey('raw', enc.encode(normCode(pin)), 'PBKDF2', false, ['deriveKey']);
+    const salt = new Uint8Array([...unb64(u.esalt), ...enc.encode('rk' + u.id)]);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: PBKDF2_ITER }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  }
+  async function sealRec(u, pin, code) {
+    if (!u.esalt) u.esalt = b64(rand(16));
+    const iv = rand(12);
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(pin, u), enc.encode(code)));
+    u.renc = b64(new Uint8Array([...iv, ...ct]));
+  }
+  async function openRec(u, pin) {
+    if (!u.renc || !u.esalt) return null;
+    try {
+      const all = unb64(u.renc);
+      const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: all.slice(0, 12) }, await aesKey(pin, u), all.slice(12));
+      return new TextDecoder().decode(pt);
+    } catch { return null; }
+  }
+  async function newRecovery(u, pin) {
+    const code = genRecCode();
+    u.rsalt = b64(rand(16));
+    u.rhash = b64(await derive(code, u.rsalt, 'rec' + u.id, PBKDF2_ITER));
+    await sealRec(u, pin, code);
+    return code;
+  }
+  const verifyRec = async (u, code) => !!u.rhash && same(await derive(code, u.rsalt, 'rec' + u.id, PBKDF2_ITER), unb64(u.rhash));
+
   // ---------- Daftar pengguna ----------
   let users = [];
   async function loadUsers() {
@@ -107,8 +140,7 @@
   const findUser = (name) => users.find((u) => u.key === String(name || '').trim().toLowerCase());
   const userKey = (u, name) => `u_${u.id}_${name}`;
 
-  async function setCode(u) {
-    const code = genCode();
+  async function setCode(u, code) {
     u.salt = b64(rand(16));
     u.iter = PBKDF2_ITER;
     u.hash = b64(await derive(code, u.salt, u.id, u.iter));
@@ -117,13 +149,15 @@
     return code;
   }
 
-  async function createUser(rawName) {
+  async function createUser(rawName, pin) {
     const name = String(rawName || '').trim();
     if (!NAME_RE.test(name)) return { err: 'Username 3-20 karakter: huruf, angka, titik, atau garis bawah.' };
+    if (!PIN_RE.test(pin || '')) return { err: PIN_ERR };
     if (findUser(name)) return { err: 'Username sudah dipakai di aplikasi ini.' };
     if (users.length >= MAX_USERS) return { err: `Aplikasi ini sudah berisi ${MAX_USERS} akun. Hapus salah satu lewat menu Control (setelah login) untuk membuat yang baru.` };
-    const u = { id: hex(rand(16)), name, key: name.toLowerCase(), created: Date.now(), lastLogin: 0, resetAt: 0 };
-    const code = await setCode(u);
+    const u = { id: hex(rand(16)), name, key: name.toLowerCase(), created: Date.now(), lastLogin: 0, resetAt: 0, pin: true };
+    await setCode(u, pin);
+    await newRecovery(u, pin);
     // Pengguna pertama mengambil alih data lama (dari versi tanpa login) supaya tidak hilang.
     if (!users.length) {
       for (const k of LEGACY_KEYS) {
@@ -133,7 +167,7 @@
     }
     users.push(u);
     await saveUsers();
-    return { code, user: u };
+    return { user: u };
   }
 
   async function verify(u, code) {
@@ -142,7 +176,7 @@
 
   const lockLeft = (u) => Math.max(0, (u.lockUntil || 0) - Date.now());
   const secs = (ms) => Math.ceil(ms / 1000);
-  const GENERIC_ERR = 'Username atau kode salah.';
+  const GENERIC_ERR = 'Username atau sandi salah.';
 
   async function tryLogin(name, code) {
     const u = findUser(name);
@@ -198,12 +232,13 @@
   const Auth = {
     ready, media, native, MAX_USERS, NAME_RE,
     user: null,          // {id, name}
-    notice: '',          // pesan sesudah login (mis. kode pernah direset)
+    notice: '',          // pesan sesudah login
     key: (name) => (Auth.user ? `u_${Auth.user.id}_${name}` : name),
+    rec: '',             // kode pemulihan (hanya di memori, selama sesi)
     logout() { location.reload(); },
     userCount: () => users.length,
-    // Ganti kode: wajib kode lama. Mengembalikan {code} atau {err}.
-    async changeCode(oldCode) {
+    // Ganti sandi: wajib sandi lama. Mengembalikan {ok} atau {err}.
+    async changeCode(oldCode, newPin) {
       const u = users.find((x) => x.id === Auth.user.id);
       if (!u) return { err: 'Akun tidak ditemukan.' };
       const left = lockLeft(u);
@@ -212,13 +247,34 @@
         u.fails = (u.fails || 0) + 1;
         if (u.fails >= FREE_TRIES) u.lockUntil = Date.now() + Math.min(LOCK_MAX, LOCK_BASE * 2 ** (u.fails - FREE_TRIES));
         await saveUsers();
-        return { err: 'Kode saat ini salah.' };
+        return { err: 'Sandi saat ini salah.' };
       }
-      const code = await setCode(u);
+      if (!PIN_RE.test(newPin || '')) return { err: PIN_ERR };
+      const keep = Auth.rec || (await openRec(u, oldCode));
+      await setCode(u, newPin);
+      u.pin = true;
+      Auth.rec = keep || (await newRecovery(u, newPin));
+      if (keep) await sealRec(u, newPin, keep);
       await saveUsers();
-      return { code };
+      return { ok: true };
     },
-    // Hapus akun yang sedang login beserta datanya. Wajib kode.
+    // Buat kode pemulihan baru (kode lama tidak berlaku lagi). Wajib sandi. Mengembalikan {code} atau {err}.
+    async newRecovery(pin) {
+      const u = users.find((x) => x.id === Auth.user.id);
+      if (!u) return { err: 'Akun tidak ditemukan.' };
+      const left = lockLeft(u);
+      if (left) return { err: `Terlalu banyak percobaan. Coba lagi dalam ${secs(left)} detik.` };
+      if (!(await verify(u, pin))) {
+        u.fails = (u.fails || 0) + 1;
+        if (u.fails >= FREE_TRIES) u.lockUntil = Date.now() + Math.min(LOCK_MAX, LOCK_BASE * 2 ** (u.fails - FREE_TRIES));
+        await saveUsers();
+        return { err: 'Sandi salah.' };
+      }
+      Auth.rec = await newRecovery(u, pin);
+      await saveUsers();
+      return { code: Auth.rec };
+    },
+    // Hapus akun yang sedang login beserta datanya. Wajib sandi.
     async deleteCurrent(code) {
       const u = users.find((x) => x.id === Auth.user.id);
       if (!u) return { err: 'Akun tidak ditemukan.' };
@@ -228,7 +284,7 @@
         u.fails = (u.fails || 0) + 1;
         if (u.fails >= FREE_TRIES) u.lockUntil = Date.now() + Math.min(LOCK_MAX, LOCK_BASE * 2 ** (u.fails - FREE_TRIES));
         await saveUsers();
-        return { err: 'Kode salah.' };
+        return { err: 'Sandi salah.' };
       }
       await wipeUser(u);
       return { ok: true };
@@ -241,6 +297,28 @@
     users = users.filter((x) => x.id !== u.id);
     await saveUsers();
   }
+
+  // Sandi baru lewat kode pemulihan. Data akun tetap. Mengembalikan {ok} atau {err}.
+  async function resetByRecovery(name, rcode, newPin) {
+    const u = findUser(name);
+    if (!u || !u.rhash) { await derive('x', b64(new Uint8Array(16)), 'none', PBKDF2_ITER); return { err: 'Username atau kode pemulihan salah.' }; }
+    const left = lockLeft(u);
+    if (left) return { err: `Terlalu banyak percobaan. Coba lagi dalam ${secs(left)} detik.` };
+    if (!PIN_RE.test(newPin || '')) return { err: PIN_ERR };
+    if (!(await verifyRec(u, rcode))) {
+      u.fails = (u.fails || 0) + 1;
+      if (u.fails >= FREE_TRIES) u.lockUntil = Date.now() + Math.min(LOCK_MAX, LOCK_BASE * 2 ** (u.fails - FREE_TRIES));
+      await saveUsers();
+      return { err: 'Username atau kode pemulihan salah.' };
+    }
+    await setCode(u, newPin);
+    u.pin = true;
+    await sealRec(u, newPin, genRecCodeNorm(rcode));
+    u.resetAt = Date.now();
+    await saveUsers();
+    return { ok: true, user: u };
+  }
+  const genRecCodeNorm = (c) => { const n = normCode(c); return n.length === REC_LEN ? n.match(/.{4}/g).join('-') : n; };
 
   // ---------- Layar login ----------
   const root = h('div', { id: 'auth', class: 'auth', role: 'dialog', 'aria-label': 'Login' });
@@ -261,8 +339,8 @@
 
   // Layar: login
   const inUser = field('aUser', 'Username', 'text', { autocomplete: 'username' });
-  const inCode = field('aCode', 'Kode sandi', 'password', { autocomplete: 'off' });
-  const eye = h('button', { type: 'button', class: 'aeye', text: 'Lihat', 'aria-label': 'Tampilkan kode', onclick: () => {
+  const inCode = field('aCode', 'Sandi', 'password', { autocomplete: 'off', maxlength: '12' });
+  const eye = h('button', { type: 'button', class: 'aeye', text: 'Lihat', 'aria-label': 'Tampilkan sandi', onclick: () => {
     const show = inCode.type === 'password';
     inCode.type = show ? 'text' : 'password';
     eye.textContent = show ? 'Sembunyi' : 'Lihat';
@@ -272,52 +350,48 @@
     h('h2', { text: 'Login' }),
     inUser,
     h('div', { class: 'afrow' }, inCode, eye),
-    h('div', { class: 'aside' }, link('Lupa kode?', () => go('forgot'))),
+    h('div', { class: 'aside' }, link('Lupa sandi?', () => go('forgot'))),
     loginBtn,
   );
 
   // Layar: buat akun
   const inNew = field('aNew', 'Pilih username', 'text', { maxlength: '20' });
+  const numAttrs = { maxlength: '6', inputmode: 'numeric', pattern: '[0-9]*' };
+  const inPin = field('aPin', 'Sandi 6 angka', 'password', numAttrs);
+  const inPin2 = field('aPin2', 'Ulangi sandi', 'password', numAttrs);
   const createBtn = gbtn('Buat akun', doCreate);
   const sCreate = h('section', { class: 'scr', 'data-s': 'create' },
     h('h2', { text: 'Buat akun' }),
     inNew,
-    h('p', { class: 'ahint', text: 'Setelah itu aplikasi membuat kode sandi acak untukmu. Kode hanya tampil satu kali.' }),
+    inPin,
+    inPin2,
+    h('p', { class: 'ahint', text: 'Sandi 6 angka buatanmu sendiri. Bisa diganti nanti di menu Control.' }),
     createBtn,
   );
 
-  // Layar: tampilkan kode (sekali)
-  const codeBox = h('div', { class: 'codebox', 'aria-live': 'polite' });
-  const codeTitle = h('h2');
-  const savedChk = h('input', { type: 'checkbox', id: 'aSaved' });
-  const codeNext = gbtn('Lanjut ke login', () => { codeBox.textContent = ''; go('login'); });
-  codeNext.disabled = true;
-  savedChk.addEventListener('change', () => { codeNext.disabled = !savedChk.checked; });
-  const copyBtn = gbtn('Salin kode', async () => {
-    try { await navigator.clipboard.writeText(codeBox.dataset.v || ''); say('Kode disalin.', true); } catch { say('Gagal menyalin. Catat kodenya secara manual.'); }
-  }, true);
-  const sCode = h('section', { class: 'scr', 'data-s': 'code' },
-    codeTitle,
-    codeBox,
-    h('p', { class: 'ahint warn', text: 'Catat kode ini sekarang. Aplikasi tidak menyimpan kodenya dan tidak bisa menampilkannya lagi.' }),
-    copyBtn,
-    h('label', { class: 'achk' }, savedChk, h('span', { text: 'Saya sudah menyimpan kode ini' })),
-    codeNext,
-  );
-
-  // Layar: lupa kode
+  // Layar: lupa sandi (kode pemulihan; hapus akun hanya sebagai jalan terakhir)
   const inForgot = field('aForgot', 'Username', 'text');
+  const inRec = field('aRec', 'Kode pemulihan (XXXX-XXXX-XXXX)', 'text', { autocapitalize: 'characters', maxlength: '14' });
+  const inRecPin = field('aRecPin', 'Sandi baru (6 angka)', 'password', numAttrs);
+  const inRecPin2 = field('aRecPin2', 'Ulangi sandi baru', 'password', numAttrs);
+  const recBtn = gbtn('Atur sandi baru', doRecover);
   const inWipe = field('aWipe', 'Ketik username lagi untuk konfirmasi', 'text');
   const wipeBtn = gbtn('Hapus akun ini & buat ulang', doWipe, true);
-  const forgotInfo = h('p', { class: 'ahint', text: 'Kode lama tidak bisa dilihat lagi karena tidak disimpan. Satu-satunya cara: hapus akun ini (datanya ikut terhapus) lalu buat ulang.' });
+  const wipeBox = h('div', { class: 'wipebox', hidden: true }, inWipe, wipeBtn);
+  const wipeLink = link('Tidak punya kode pemulihan?', () => { wipeBox.hidden = !wipeBox.hidden; });
   const sForgot = h('section', { class: 'scr', 'data-s': 'forgot' },
-    h('h2', { text: 'Lupa kode' }),
+    h('h2', { text: 'Lupa sandi' }),
     inForgot,
-    forgotInfo,
-    inWipe, wipeBtn,
+    inRec,
+    inRecPin,
+    inRecPin2,
+    recBtn,
+    h('div', { class: 'aside' }, wipeLink),
+    h('p', { class: 'ahint', text: 'Kode pemulihan ada di menu Control (setelah login). Tanpa kode itu, satu-satunya cara: hapus akun (datanya ikut terhapus) lalu buat ulang.' }),
+    wipeBox,
   );
 
-  const panel = h('div', { class: 'auth-panel' }, sLogin, sCreate, sCode, sForgot, msg,
+  const panel = h('div', { class: 'auth-panel' }, sLogin, sCreate, sForgot, msg,
     h('div', { class: 'abottom' },
       h('span', { class: 'abq', 'data-for': 'login' }, 'Belum punya akun? ', link('Buat akun', () => go('create'))),
       h('span', { class: 'abq', 'data-for': 'create' }, 'Sudah punya akun? ', link('Login', () => go('login'))),
@@ -340,6 +414,12 @@
   );
   root.append(mediaBg, h('div', { class: 'auth-wrap' }, card, foot));
 
+  // Papan angka hanya untuk akun dengan sandi 6 angka (akun lama punya kode huruf+angka)
+  inUser.addEventListener('input', () => {
+    const u = findUser(inUser.value);
+    inCode.setAttribute('inputmode', u && u.pin ? 'numeric' : 'text');
+  });
+
   let screen = 'login';
   let forgotUser = null;
   function go(name) {
@@ -348,30 +428,19 @@
     for (const s of panel.querySelectorAll('.scr')) s.hidden = s.dataset.s !== name;
     for (const s of panel.querySelectorAll('.abq')) s.hidden = s.dataset.for !== name;
     if (name === 'login') { inCode.value = ''; inCode.type = 'password'; eye.textContent = 'Lihat'; }
-    if (name === 'forgot' && !inForgot.value) inForgot.value = inUser.value;
-    if (name === 'create') inNew.value = '';
-  }
-
-  function showCode(title, code) {
-    codeTitle.textContent = title;
-    codeBox.textContent = code;
-    codeBox.dataset.v = code;
-    savedChk.checked = false;
-    codeNext.disabled = true;
-    go('code');
-    codeBox.textContent = code;
-    for (const s of panel.querySelectorAll('.abq')) s.hidden = true;
+    if (name === 'forgot') { if (!inForgot.value) inForgot.value = inUser.value; inRec.value = ''; inRecPin.value = ''; inRecPin2.value = ''; wipeBox.hidden = true; }
+    if (name === 'create') { inNew.value = ''; inPin.value = ''; inPin2.value = ''; }
   }
 
   async function doLogin() {
     const name = inUser.value.trim();
     const code = inCode.value;
-    if (!name || !code) { say('Isi username dan kode sandi.'); return; }
+    if (!name || !code) { say('Isi username dan sandi.'); return; }
     busy(loginBtn, true);
     try {
       const r = await tryLogin(name, code);
       if (r.err) { say(r.err); return; }
-      await finish(r.user);
+      await finish(r.user, code);
     } catch (e) {
       console.error(e);
       say('Terjadi kesalahan. Coba lagi.');
@@ -379,16 +448,36 @@
   }
 
   async function doCreate() {
+    if (inPin.value !== inPin2.value) { say('Sandi dan ulangi sandi tidak sama.'); return; }
     busy(createBtn, true);
     try {
-      const r = await createUser(inNew.value);
+      const r = await createUser(inNew.value, inPin.value);
       if (r.err) { say(r.err); return; }
       inUser.value = r.user.name;
-      showCode('Kode sandi kamu', r.code);
+      inUser.dispatchEvent(new Event('input'));
+      go('login');
+      say('Akun dibuat. Login dengan sandi kamu.', true);
     } catch (e) {
       console.error(e);
       say('Gagal membuat akun. Coba lagi.');
     } finally { busy(createBtn, false); }
+  }
+
+  async function doRecover() {
+    if (!inForgot.value.trim() || !inRec.value.trim()) { say('Isi username dan kode pemulihan.'); return; }
+    if (inRecPin.value !== inRecPin2.value) { say('Sandi baru dan ulangi tidak sama.'); return; }
+    busy(recBtn, true);
+    try {
+      const r = await resetByRecovery(inForgot.value, inRec.value, inRecPin.value);
+      if (r.err) { say(r.err); return; }
+      inUser.value = r.user.name;
+      inUser.dispatchEvent(new Event('input'));
+      go('login');
+      say('Sandi baru dipasang. Login dengan sandi baru.', true);
+    } catch (e) {
+      console.error(e);
+      say('Terjadi kesalahan. Coba lagi.');
+    } finally { busy(recBtn, false); }
   }
 
   async function doWipe() {
@@ -401,13 +490,19 @@
     say('Akun dihapus. Buat akun baru dengan username yang sama atau yang lain.', true);
   }
 
-  async function finish(u) {
+  async function finish(u, code) {
     const notice = u.resetAt && u.resetAt > (u.lastLogin || 0)
-      ? `Kode akun ini direset pada ${new Date(u.resetAt).toLocaleString('id-ID')}.` : '';
+      ? `Sandi akun ini direset pada ${new Date(u.resetAt).toLocaleString('id-ID')}.` : '';
     u.lastLogin = Date.now();
-    await saveUsers();
     Auth.user = { id: u.id, name: u.name };
     Auth.notice = notice;
+    // Kode pemulihan: buka dengan sandi yang baru diketik. Akun lama yang belum punya dibuatkan sekarang.
+    Auth.rec = (await openRec(u, code)) || '';
+    if (!Auth.rec) {
+      Auth.rec = await newRecovery(u, code);
+      Auth.notice = (notice ? notice + ' ' : '') + 'Kode pemulihan dibuat. Catat di menu Control.';
+    }
+    await saveUsers();
     root.classList.add('out');
     document.body.classList.remove('locked');
     setTimeout(() => root.remove(), 450);
@@ -417,7 +512,7 @@
   // Enter = login / aksi utama layar aktif
   root.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    ({ login: doLogin, create: doCreate }[screen] || (() => {}))();
+    ({ login: doLogin, create: doCreate, forgot: doRecover }[screen] || (() => {}))();
   });
 
   (async function start() {
