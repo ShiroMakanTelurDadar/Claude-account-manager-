@@ -809,11 +809,12 @@ function initHistory() {
       },
     }),
   );
-  histDrawer.append(
-    el('button', { type: 'button', class: 'btn-g hclear', text: '⬇ Ekspor data', onclick: () => { closeHistory(); exportData(); } }),
-    el('button', { type: 'button', class: 'btn-g hclear', text: '⬆ Impor data', onclick: () => { closeHistory(); importData(); } }),
-  );
-  // Wallpaper di bawah slide (1/3 tinggi, di belakang tombol; ujung atas memudar lewat CSS mask)
+  // Ekspor + Impor sebaris: total 2 baris di bawah (Hapus riwayat, lalu Ekspor | Impor)
+  histDrawer.append(el('div', { class: 'hbtns' },
+    el('button', { type: 'button', class: 'btn-g hclear', text: '⬇ Ekspor', 'aria-label': 'Ekspor data', onclick: () => { closeHistory(); exportData(); } }),
+    el('button', { type: 'button', class: 'btn-g hclear', text: '⬆ Impor', 'aria-label': 'Impor data', onclick: () => { closeHistory(); importData(); } }),
+  ));
+  // Wallpaper di bawah slide (setengah tinggi, di belakang tombol; ujung atas memudar lewat CSS mask)
   histImgEl = el('div', { class: 'himg', 'aria-hidden': 'true' }, el('img', { alt: '', draggable: 'false' }));
   histDrawer.prepend(histImgEl);
   window.addEventListener('cam:histbg', applyHistImg);
