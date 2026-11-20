@@ -486,16 +486,27 @@ header { flex-direction: row; align-items: center; gap: 12px; margin: 0 4px 12px
 .memo.empty { font-size: 10px; font-weight: 800; letter-spacing: .14em; }
 .memo:active { opacity: .6; }
 
-/* Wallpaper bawah slide riwayat: tinggi setengah slide, di belakang tombol, ujung atas memudar ke warna dasar */
+/* Wallpaper slide riwayat: memenuhi seluruh tinggi slide (dari dasar sampai atas), di belakang semua isi */
 .hdrawer > *:not(.himg) { position: relative; z-index: 1; }
-.hdrawer { --himg-h: 50%; }   /* tinggi wallpaper = setengah tinggi slide; ubah angka ini kalau mau lebih kecil/besar */
+.hdrawer { --himg-h: 100%; }
 .himg {
   position: absolute; left: 0; right: 0; bottom: 0; height: var(--himg-h); z-index: 0;
   overflow: hidden; pointer-events: none;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.08) 10%, rgba(0,0,0,.3) 24%, rgba(0,0,0,.65) 42%, rgba(0,0,0,.9) 60%, #000 78%);
-          mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,.08) 10%, rgba(0,0,0,.3) 24%, rgba(0,0,0,.65) 42%, rgba(0,0,0,.9) 60%, #000 78%);
 }
-.himg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center 70%; }   /* bawaan: helm + badan di tengah, latar gelap atas ikut memudar */
+.himg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 82% center; }   /* bawaan: helm di sisi kanan gambar */
+/* Lapisan gelap tipis supaya judul, kartu riwayat, dan tombol tetap terbaca di atas gambar */
+.himg::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(5, 11, 18, .62) 0%, rgba(5, 11, 18, .22) 38%, rgba(5, 11, 18, .18) 70%, rgba(5, 11, 18, .5) 100%);
+}
+.hdrawer .htitle { text-shadow: 0 1px 8px rgba(0, 0, 0, .8); }
+/* Daftar riwayat memudar sebelum sampai di tepi atas dan bawahnya */
+.hdrawer .hlist {
+  padding: 22px 0 34px; margin: -10px 0;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 34px), transparent 100%);
+          mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 34px), transparent 100%);
+}
+.hdrawer .hitem { background: rgba(5, 11, 18, .58); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
 
 /* Tombol di bawah panel riwayat */
 .hdrawer .hclear { width: 100%; flex-shrink: 0; text-align: center; }
