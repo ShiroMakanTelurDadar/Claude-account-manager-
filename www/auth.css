@@ -4,8 +4,8 @@
   --a-sky: #7dd3fc;
   --a-sky2: #38bdf8;
   --a-black: #0a0d12;
-  --a-grad: linear-gradient(100deg, #0a0d12 0%, #38bdf8 36%, #7dd3fc 56%, #ffffff 100%);
-  --a-grad-alt: linear-gradient(100deg, #ffffff 0%, #7dd3fc 44%, #38bdf8 64%, #0a0d12 100%);
+  --a-grad: linear-gradient(135deg, #38bdf8 0%, #7dd3fc 100%);
+  --a-grad-alt: #05080c;
 }
 
 body.locked { overflow: hidden; }
@@ -91,13 +91,12 @@ body.locked > #empty { display: none; }
 
 /* Tombol: gradasi putih, biru langit, hitam */
 .gbtn {
-  width: 100%; border: 1px solid rgba(255, 255, 255, .4); border-radius: 14px; padding: 11px 14px; font: inherit; font-size: 16px; font-weight: 700;
+  width: 100%; border: 1px solid rgba(125, 211, 252, .5); border-radius: 14px; padding: 11px 14px; font: inherit; font-size: 16px; font-weight: 700;
   color: #04121c; background: var(--a-grad); cursor: pointer;
-  box-shadow: 0 10px 22px -12px rgba(10, 13, 18, .6), inset 0 1px 0 rgba(255, 255, 255, .5);
+  box-shadow: 0 10px 22px -12px rgba(0, 0, 0, .8);
   transition: transform .15s, filter .2s, opacity .2s;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, .35);
 }
-.gbtn.alt { background: var(--a-grad-alt); font-size: 13.5px; padding: 9px 12px; }
+.gbtn.alt { background: var(--a-grad-alt); color: var(--a-sky); border-color: rgba(125, 211, 252, .5); font-size: 13.5px; padding: 9px 12px; }
 .gbtn:active { transform: scale(.97); filter: brightness(.95); }
 .gbtn:disabled { opacity: .5; cursor: default; }
 
@@ -148,7 +147,7 @@ header h1 { white-space: nowrap; font-size: 21px; min-width: 0; }
 .cbackdrop.show { opacity: 1; }
 .csheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 901; max-height: 92dvh; overflow-y: auto;
-  background: linear-gradient(180deg, #0c1a2a, #070d14); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0;
+  background: #05080c; border-top: 1px solid var(--line); border-radius: 22px 22px 0 0;
   padding: 18px 16px calc(24px + env(safe-area-inset-bottom)); transform: translateY(100%); transition: transform .3s cubic-bezier(.2, .8, .2, 1);
 }
 .csheet.open { transform: none; }
@@ -161,14 +160,15 @@ header h1 { white-space: nowrap; font-size: 21px; min-width: 0; }
 .cnote { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
 .cnote b { color: var(--text); }
 .cbtn {
-  width: 100%; margin-top: 8px; padding: 11px 12px; border-radius: 12px; border: 1px solid rgba(10, 13, 18, .4); font-weight: 700; font-size: 14px;
-  color: #04121c; background: var(--a-grad); cursor: pointer;
+  width: 100%; margin-top: 8px; padding: 11px 12px; border-radius: 12px; border: 1px solid rgba(125, 211, 252, .5); font-weight: 700; font-size: 14px;
+  color: #03131c; background: var(--a-grad); cursor: pointer;
 }
-.cbtn.alt { background: var(--a-grad-alt); }
+.cbtn.alt { background: #000; color: var(--a-sky); }
 .cbtn.danger { background: none; color: #fca5a5; border-color: rgba(252, 165, 165, .4); }
 .cbtn:disabled { opacity: .5; }
 .cprev { display: block; width: 90px; aspect-ratio: 9 / 16; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #000; position: relative; flex-shrink: 0; }
 .cprev img, .cprev video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cmsg:empty { display: none; }
 .cmsg { min-height: 16px; margin: 6px 0 0; font-size: 12.5px; font-weight: 600; color: #fca5a5; }
 .cmsg.ok { color: var(--sky); }
 .cswitch { position: relative; width: 46px; height: 26px; flex-shrink: 0; }
@@ -180,7 +180,7 @@ header h1 { white-space: nowrap; font-size: 21px; min-width: 0; }
 
 /* Modal crop & kode */
 .cmodal { position: fixed; inset: 0; z-index: 950; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .78); }
-.cbox { width: min(100%, 360px); max-height: 94dvh; overflow-y: auto; background: #0c1a2a; border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
+.cbox { width: min(100%, 360px); max-height: 94dvh; overflow-y: auto; background: #05080c; border: 1px solid var(--line); border-radius: 18px; padding: 16px; }
 .cbox h3 { margin: 0 0 8px; font-size: 16px; }
 .cbox .afld { color: var(--text); border-bottom-color: var(--line); }
 .cbox .afld::placeholder { color: var(--muted); }
@@ -191,3 +191,13 @@ header h1 { white-space: nowrap; font-size: 21px; min-width: 0; }
 .cbtns { display: flex; gap: 8px; margin-top: 10px; }
 .cbtns .cbtn { margin-top: 0; }
 .cbox .codebox { margin: 10px 0; background: rgba(255, 255, 255, .08); color: #e6f4ff; border-color: var(--line); }
+
+/* Panel akun: 2 baris. Baris 2 = 3 tombol kecil */
+.cacts { display: flex; gap: 8px; }
+.cacts .cbtn { margin-top: 0; padding: 8px 6px; font-size: 13px; }
+.csec .crow:first-child { margin-top: 0; }
+
+/* Kode pemulihan & kotak hapus akun di layar Lupa sandi */
+.rcode { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 14px; font-weight: 700; letter-spacing: .08em; color: var(--sky); }
+.wipebox { display: flex; flex-direction: column; gap: 9px; }
+.wipebox[hidden] { display: none; }
