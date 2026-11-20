@@ -92,6 +92,21 @@
       recMsg,
     ));
 
+    // --- Tema (kotak palet kecil dengan nama tema) ---
+    if (window.Theme) {
+      const cur = Theme.get();
+      const row = h('div', { class: 'cthemes' });
+      for (const t of Theme.list) {
+        const [c1, c2, c3] = t.colors;
+        const sw = h('i', { style: `--pal: linear-gradient(135deg, ${c1} 0 34%, ${c2} 34% 67%, ${c3} 67% 100%)` });
+        row.append(h('button', {
+          type: 'button', class: `ctheme${t.id === cur ? ' on' : ''}`, 'aria-pressed': t.id === cur ? 'true' : 'false', 'aria-label': `Tema ${t.name}`,
+          onclick: () => { Theme.set(t.id); build(); },
+        }, sw, h('span', { text: t.name })));
+      }
+      bodyEl.append(h('div', { class: 'csec' }, h('h3', { text: 'Tema' }), row));
+    }
+
     // --- Tampilan login ---
     const rec = await Auth.media.get();
     if (!bodyEl) return;
