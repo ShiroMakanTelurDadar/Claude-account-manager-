@@ -64,11 +64,13 @@
   };
   const media = {
     DEFAULT_URL: 'assets/login-default.jpg',
+    HIST_DEFAULT_URL: 'assets/history-default.jpg',   // gambar bawaan slide riwayat
     W: 720, H: 1280,                 // ukuran hasil crop gambar; rasio 9:16
     RATIO: 9 / 16,
-    async get() { try { return (await idbOp('readonly', (s) => s.get('bg'))) || null; } catch { return null; } },
-    async set(rec) { await idbOp('readwrite', (s) => s.put(rec, 'bg')); },
-    async clear() { try { await idbOp('readwrite', (s) => s.delete('bg')); } catch {} },
+    // Kunci: 'bg' = latar halaman login (bawaan), 'hist' = gambar di bawah slide riwayat
+    async get(k = 'bg') { try { return (await idbOp('readonly', (s) => s.get(k))) || null; } catch { return null; } },
+    async set(rec, k = 'bg') { await idbOp('readwrite', (s) => s.put(rec, k)); },
+    async clear(k = 'bg') { try { await idbOp('readwrite', (s) => s.delete(k)); } catch {} },
   };
 
   // ---------- Kripto ----------
