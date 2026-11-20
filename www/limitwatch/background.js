@@ -9,7 +9,7 @@ browser.runtime.onMessage.addListener((msg) => {
     browser.runtime.sendNativeMessage('browser', msg).catch(() => {});
     return undefined;
   }
-  if (msg.type === 'loginHelp') {
+  if (msg.type === 'loginHelp' || msg.type === 'pasteCheck') {
     // Jawaban native (email akun dan command Continue) dikembalikan ke content script
     return browser.runtime.sendNativeMessage('browser', msg).catch(() => null);
   }
