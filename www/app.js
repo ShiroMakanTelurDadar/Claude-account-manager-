@@ -957,6 +957,7 @@ async function applyHistImg() {
   let rec = null;
   try { rec = window.Auth && Auth.media ? await Auth.media.get('hist') : null; } catch {}
   if (histImgUrl) { URL.revokeObjectURL(histImgUrl); histImgUrl = null; }
+  histImgEl.classList.toggle('isdefault', !(rec && rec.blob));   // gambar bawaan tema punya posisi sendiri (lihat theme.css)
   if (rec && rec.blob) { histImgUrl = URL.createObjectURL(rec.blob); img.src = histImgUrl; }
   else img.src = (window.Auth && Auth.media && Auth.media.HIST_DEFAULT_URL) || 'assets/history-petronas.jpg';
 }
