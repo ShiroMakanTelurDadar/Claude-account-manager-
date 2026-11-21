@@ -213,3 +213,14 @@ header h1 { white-space: nowrap; font-size: 21px; min-width: 0; }
 .rcode { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 14px; font-weight: 700; letter-spacing: .08em; color: var(--sky); }
 .wipebox { display: flex; flex-direction: column; gap: 9px; }
 .wipebox[hidden] { display: none; }
+
+/* Tampilan: tiga kotak gambar sejajar (login | riwayat | beranda) */
+.ctiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ctile { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
+.ctpick { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: pointer; }
+.ctile .cprev { width: 100%; }
+.ctlabel { font-size: 11.5px; font-weight: 700; color: var(--text); text-align: center; line-height: 1.2; }
+.ctreset { font-size: 11px; padding: 3px 8px; border-radius: 99px; border: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer; }
+.ctreset.ph { visibility: hidden; border-color: transparent; }
+.cprev.home.empty { display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg, var(--bg-top), var(--bg) 55%, var(--bg-end)); }
+.cprev.home.empty span { position: static; font-size: 11px; color: var(--muted); }
