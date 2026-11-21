@@ -439,11 +439,11 @@ async function connectAccount(a) {
 }
 
 // ---------- Deteksi limit dari browser aplikasi ----------
-const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|hit your [^\n]{0,40}limit/i;
+const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|keep chatting with claude pro|free messages return|keep going now with pro|free usage ran out|usage ran out|hit your [^\n]{0,40}limit/i;
 
 // "until 4:00 PM", "resets at 2:50 PM" atau "hingga 16.00" -> waktu berikutnya dengan jam itu (dihitung dari saat banner terlihat)
 function parseResetAt(text, ref = Date.now()) {
-  const m = /(?:until|hingga|sampai|resets?(?:\s+at)?|reset pada)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
+  const m = /(?:until|hingga|sampai|resets?(?:\s+at)?|returns?(?:\s+at)?|reset pada)\s+(\d{1,2})[:.](\d{2})\s*(AM|PM)?/i.exec(text);
   if (!m) return null;
   let h = parseInt(m[1], 10);
   const min = parseInt(m[2], 10);
@@ -958,7 +958,7 @@ async function applyHistImg() {
   try { rec = window.Auth && Auth.media ? await Auth.media.get('hist') : null; } catch {}
   if (histImgUrl) { URL.revokeObjectURL(histImgUrl); histImgUrl = null; }
   if (rec && rec.blob) { histImgUrl = URL.createObjectURL(rec.blob); img.src = histImgUrl; }
-  else img.src = (window.Auth && Auth.media && Auth.media.HIST_DEFAULT_URL) || 'assets/history-default.jpg';
+  else img.src = (window.Auth && Auth.media && Auth.media.HIST_DEFAULT_URL) || 'assets/history-petronas.jpg';
 }
 
 // Gambar beranda: buatan pengguna (Control > Tampilan > Beranda); kosong = gambar bawaan
@@ -973,10 +973,12 @@ async function applyHomeImg() {
   try { rec = window.Auth && Auth.media ? await Auth.media.get('home') : null; } catch {}
   if (homeImgUrl) { URL.revokeObjectURL(homeImgUrl); homeImgUrl = null; }
   if (rec && rec.blob) { homeImgUrl = URL.createObjectURL(rec.blob); box.firstChild.src = homeImgUrl; box.classList.add('on'); }
-  else { box.firstChild.src = (window.Auth && Auth.media && Auth.media.HOME_DEFAULT_URL) || 'assets/home-default.jpg'; box.classList.add('on'); }
+  else { box.firstChild.src = (window.Auth && Auth.media && Auth.media.HOME_DEFAULT_URL) || 'assets/home-petronas.jpg'; box.classList.add('on'); }
  } catch (e) { console.error('homeimg', e); }
 }
 window.addEventListener('cam:homebg', applyHomeImg);
+// Ganti tema: gambar beranda dan riwayat ikut berganti (bawaan tema atau gambar buatan pengguna untuk tema itu)
+window.addEventListener('themechange', () => { applyHomeImg(); applyHistImg(); });
 applyHomeImg();
 
 function openHistory() {
