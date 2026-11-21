@@ -40,7 +40,8 @@ html[data-theme="oracle"] {
   --on-grad: #180503;
   --grad: linear-gradient(135deg, #dc2626 0%, #f97316 52%, #fbbf24 100%);
   /* bubble akun: hitam > merah > kuning */
-  --acc-bg: linear-gradient(135deg, #090403 0%, #1f0605 24%, #7c1710 60%, #b9770e 100%);
+  /* semi transparan + saturasi diturunkan supaya gambar di belakang bubble kelihatan */
+  --acc-bg: linear-gradient(135deg, rgba(9, 4, 3, .80) 0%, rgba(31, 6, 5, .64) 26%, rgba(150, 24, 16, .50) 62%, rgba(214, 140, 14, .40) 100%);
   --a-black: #0a0504;
   --a-grad-alt: #0a0504;
 }
@@ -51,4 +52,35 @@ html[data-theme="oracle"] .btn { box-shadow: 0 8px 22px -8px rgba(239, 68, 68, .
 html[data-theme="oracle"] .cswitch input:checked + i { background: #f59e0b; }
 html[data-theme="oracle"] .cropzoom,
 html[data-theme="oracle"] .achk input { accent-color: #ef4444; }
-html[data-theme="oracle"] .acc { border-color: rgba(251, 191, 36, .22); }
+html[data-theme="oracle"] .acc {
+  border-color: rgba(251, 191, 36, .42);
+  -webkit-backdrop-filter: blur(4px) saturate(.75); backdrop-filter: blur(4px) saturate(.75);
+}
+html[data-theme="oracle"] .acc.waiting { border-color: rgba(253, 224, 71, .6); }
+
+/* Tombol Oracle: dominan hitam, aksen merah lalu kuning, tulisan kuning terang */
+html[data-theme="oracle"] .btn,
+html[data-theme="oracle"] .go,
+html[data-theme="oracle"] .tbtn.primary,
+html[data-theme="oracle"] .tbtn.primary:active {
+  background: linear-gradient(135deg, #070302 0%, #0d0504 52%, #8f1812 82%, #d97706 100%);
+  color: #fde047; border: 1px solid rgba(251, 191, 36, .75);
+  box-shadow: 0 8px 22px -8px rgba(239, 68, 68, .75), inset 0 1px 0 rgba(253, 224, 71, .35);
+}
+html[data-theme="oracle"] .go:disabled { border-color: rgba(251, 191, 36, .25); }
+html[data-theme="oracle"] .acc.ready .go::after { background: linear-gradient(110deg, transparent 30%, rgba(253, 224, 71, .45) 50%, transparent 70%); }
+html[data-theme="oracle"] .link,
+html[data-theme="oracle"] .chev,
+html[data-theme="oracle"] .menubtn,
+html[data-theme="oracle"] .tbtn:not(.primary),
+html[data-theme="oracle"] .btn-g,
+html[data-theme="oracle"] .connect {
+  background: rgba(8, 3, 2, .88); border: 1px solid rgba(251, 191, 36, .6); color: #fbbf24;
+}
+html[data-theme="oracle"] .link:active,
+html[data-theme="oracle"] .chev:active { background: rgba(185, 28, 28, .55); }
+html[data-theme="oracle"] .btn-d {
+  background: rgba(8, 3, 2, .88); color: #f87171; border: 1px solid rgba(239, 68, 68, .75);
+}
+html[data-theme="oracle"] .sumbar { background: rgba(8, 3, 2, .7); border-color: rgba(251, 191, 36, .4); }
+html[data-theme="oracle"] .tbtn.ok { color: #86efac; }
