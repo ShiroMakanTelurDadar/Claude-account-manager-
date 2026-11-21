@@ -85,3 +85,14 @@ html[data-theme="oracle"] .btn-d {
 }
 html[data-theme="oracle"] .sumbar { background: rgba(8, 3, 2, .45); border-color: rgba(251, 191, 36, .4); }
 html[data-theme="oracle"] .tbtn.ok { color: #86efac; }
+
+/* ---- Tema Petronas (default) ---- */
+/* gambar bawaan slide riwayat: helm ada di sisi kiri gambar, geser tampilan ke kiri supaya pembalap kelihatan */
+html[data-theme="default"] .himg.isdefault img { object-position: 6% center; }
+/* bubble akun semi transparan seperti tema Oracle: gambar di belakang kelihatan jelas */
+html[data-theme="default"] {
+  --acc-bg: linear-gradient(135deg, rgba(4, 7, 12, .50) 0%, rgba(7, 21, 36, .36) 28%, rgba(14, 90, 130, .26) 64%, rgba(125, 211, 252, .20) 100%);
+}
+html[data-theme="default"] .acc {
+  -webkit-backdrop-filter: blur(1px) saturate(.55); backdrop-filter: blur(1px) saturate(.55);
+}
