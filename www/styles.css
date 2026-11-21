@@ -605,3 +605,9 @@ body > header > h1 { font-size: 16px; }
 }
 .hdclose { width: 100%; margin-top: 12px; }
 .hbadge.badx { color: #fca5a5; background: rgba(248, 113, 113, .14); }
+
+/* Gambar beranda buatan pengguna (tidak ikut tema): di atas gradasi, di bawah isi */
+.bg .homeimg { position: absolute; inset: 0; z-index: 1; display: none; }
+.bg .homeimg.on { display: block; }
+.bg .homeimg img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.bg .homeimg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,.55)); }
