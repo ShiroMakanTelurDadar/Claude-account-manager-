@@ -64,6 +64,7 @@
   };
   const media = {
     DEFAULT_URL: 'assets/login-default.jpg',
+    HOME_DEFAULT_URL: 'assets/home-default.jpg',      // gambar bawaan beranda
     HIST_DEFAULT_URL: 'assets/history-default.jpg',   // gambar bawaan slide riwayat
     W: 720, H: 1280,                 // ukuran hasil crop gambar; rasio 9:16
     RATIO: 9 / 16,
