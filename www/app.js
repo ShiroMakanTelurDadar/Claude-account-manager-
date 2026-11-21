@@ -961,9 +961,10 @@ async function applyHistImg() {
   else img.src = (window.Auth && Auth.media && Auth.media.HIST_DEFAULT_URL) || 'assets/history-default.jpg';
 }
 
-// Gambar beranda: buatan pengguna (Control > Tampilan > Beranda); kosong = pakai gradasi tema
+// Gambar beranda: buatan pengguna (Control > Tampilan > Beranda); kosong = gambar bawaan
 let homeImgUrl = null;
 async function applyHomeImg() {
+ try {
   const bg = document.querySelector('.bg');
   if (!bg) return;
   let box = bg.querySelector('.homeimg');
@@ -972,7 +973,8 @@ async function applyHomeImg() {
   try { rec = window.Auth && Auth.media ? await Auth.media.get('home') : null; } catch {}
   if (homeImgUrl) { URL.revokeObjectURL(homeImgUrl); homeImgUrl = null; }
   if (rec && rec.blob) { homeImgUrl = URL.createObjectURL(rec.blob); box.firstChild.src = homeImgUrl; box.classList.add('on'); }
-  else { box.firstChild.removeAttribute('src'); box.classList.remove('on'); }
+  else { box.firstChild.src = (window.Auth && Auth.media && Auth.media.HOME_DEFAULT_URL) || 'assets/home-default.jpg'; box.classList.add('on'); }
+ } catch (e) { console.error('homeimg', e); }
 }
 window.addEventListener('cam:homebg', applyHomeImg);
 applyHomeImg();
