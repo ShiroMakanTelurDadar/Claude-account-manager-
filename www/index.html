@@ -5,6 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#04070c">
   <title>Claude Account Manager</title>
+  <script>
+    /* Penangkap galat: kalau ada skrip yang gagal, pesannya tampil di layar (ketuk kotak merah untuk menutup) */
+    (function () {
+      var box = null, n = 0;
+      function show(t) {
+        if (n++ > 6) return;
+        if (!box) {
+          box = document.createElement('div');
+          box.style.cssText = 'position:fixed;left:6px;right:6px;bottom:6px;z-index:99999;max-height:45vh;overflow:auto;padding:8px 10px;border-radius:10px;background:#7f1d1d;color:#fff;font:11px/1.4 monospace;white-space:pre-wrap;word-break:break-all';
+          box.addEventListener('click', function () { box.remove(); box = null; n = 0; });
+          (document.body || document.documentElement).appendChild(box);
+        }
+        box.textContent += t + '\n\n';
+      }
+      window.addEventListener('error', function (e) { show('ERR ' + (e.message || '') + ' @' + String(e.filename || '').split('/').pop() + ':' + e.lineno + ':' + e.colno); });
+      window.addEventListener('unhandledrejection', function (e) { var r = e.reason; show('REJ ' + (r && (r.stack || r.message) || r)); });
+    })();
+  </script>
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="auth.css">
   <link rel="stylesheet" href="theme.css">
