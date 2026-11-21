@@ -2,6 +2,10 @@ package com.local.claudeaccountmanager;
 
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.Service;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.ClipData;
@@ -9,6 +13,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
@@ -21,7 +26,9 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.view.Gravity;
@@ -53,6 +60,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 
 public class MainActivity extends BridgeActivity {
@@ -79,6 +87,38 @@ public class MainActivity extends BridgeActivity {
         @Override
         public void load() {
             sInstance = this;
+            GeckoActivity.sHost = new WeakReference<>(getActivity());
+        }
+
+        @Override
+        protected void handleOnResume() {
+            super.handleOnResume();
+            GeckoActivity.sHost = new WeakReference<>(getActivity());
+            GeckoActivity.sHostVisible = true;
+        }
+
+        @Override
+        protected void handleOnPause() {
+            super.handleOnPause();
+            GeckoActivity.sHostVisible = false;
+        }
+
+        // Layanan latar depan: menjaga proses aplikasi tetap hidup supaya cek otomatis dan pancingan jalan walau layar mati / aplikasi diminimalkan
+        @PluginMethod
+        public void keepAlive(PluginCall call) {
+            boolean on = call.getBoolean("on", true);
+            try {
+                Intent i = new Intent(getContext(), KeepAliveService.class);
+                if (on) {
+                    if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i);
+                    else getContext().startService(i);
+                } else {
+                    getContext().stopService(i);
+                }
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("keepAlive gagal: " + e.getMessage());
+            }
         }
 
         // Dipanggil dari GeckoActivity saat halaman melapor status
@@ -218,6 +258,55 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    // Layanan latar depan: hanya menahan proses tetap hidup (notifikasi kecil + kunci CPU). Logika cek tetap di aplikasi.
+    public static class KeepAliveService extends Service {
+        private PowerManager.WakeLock wake;
+
+        @Override
+        public IBinder onBind(Intent intent) {
+            return null;
+        }
+
+        @Override
+        public int onStartCommand(Intent intent, int flags, int startId) {
+            try {
+                final String ch = "keepalive";
+                if (Build.VERSION.SDK_INT >= 26) {
+                    NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    if (nm != null) nm.createNotificationChannel(new NotificationChannel(ch, "Pengecekan latar belakang", NotificationManager.IMPORTANCE_LOW));
+                }
+                Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                b.setContentTitle("Account Manager")
+                        .setContentText("Cek otomatis dan pancingan berjalan di latar belakang")
+                        .setSmallIcon(android.R.drawable.stat_notify_sync)
+                        .setOngoing(true);
+                Notification n = b.build();
+                if (Build.VERSION.SDK_INT >= 29) startForeground(7101, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                else startForeground(7101, n);
+                if (wake == null) {
+                    PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                    if (pm != null) {
+                        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "claudeaccountmanager:keepalive");
+                        wake.setReferenceCounted(false);
+                        wake.acquire();
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+            return START_STICKY;
+        }
+
+        @Override
+        public void onDestroy() {
+            try {
+                if (wake != null && wake.isHeld()) wake.release();
+            } catch (Exception ignored) {
+            }
+            wake = null;
+            super.onDestroy();
+        }
+    }
+
     // Layar browser (mesin Firefox). Tiap akun = contextId sendiri = cookie/login terpisah.
     public static class GeckoActivity extends Activity {
         private static final String EXT_URI = "resource://android/assets/public/limitwatch/";
@@ -253,6 +342,44 @@ public class MainActivity extends BridgeActivity {
         // Halaman dimuat, lalu di-refresh (lewati cache) seperti tombol refresh di browser. Laporan halaman
         // sebelum refresh selesai dianggap basi dan dibuang.
         private static volatile boolean sReady = true;
+
+        // Sesi pengecekan dipasang ke GeckoView sungguhan (di bawah layar aplikasi, tidak terlihat) supaya halaman claude.ai
+        // mendapat jendela, ukuran layar, dan status "terlihat" persis seperti saat dibuka manual. Tanpa ini halaman bisa tidak
+        // merender percakapan dan banner Continue / limit.
+        static volatile WeakReference<Activity> sHost = null;
+        static volatile boolean sHostVisible = false;
+        private static GeckoView sHiddenView = null;
+        // Halaman (setelah refresh) sudah selesai dimuat. Pengecekan "idle" baru dianggap pasti setelah ini.
+        private static volatile boolean sSettled = false;
+        private static volatile long sSettledAt = 0;
+
+        private static void attachHidden(GeckoSession s) {
+            try {
+                Activity act = sHost == null ? null : sHost.get();
+                if (act == null || act.isFinishing() || !sHostVisible) return;
+                ViewGroup content = act.findViewById(android.R.id.content);
+                if (content == null) return;
+                GeckoView v = new GeckoView(act);
+                v.setSession(s);
+                content.addView(v, 0, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                sHiddenView = v;
+            } catch (Exception e) {
+                sHiddenView = null;
+            }
+        }
+
+        private static void detachHidden() {
+            try {
+                GeckoView v = sHiddenView;
+                sHiddenView = null;
+                if (v == null) return;
+                v.releaseSession();
+                ViewGroup p = (ViewGroup) v.getParent();
+                if (p != null) p.removeView(v);
+            } catch (Exception ignored) {
+            }
+        }
 
         // Diagnosa: apa yang terjadi di sesi tersembunyi. Dikirim ke aplikasi supaya alasan gagal bisa dijelaskan.
         private static volatile String sExtInfo = "";        // hasil pemasangan ekstensi ("ok" atau pesan error)
@@ -290,6 +417,8 @@ public class MainActivity extends BridgeActivity {
 
         // need = true: muat -> tunggu selesai -> refresh -> baru terima laporan. need = false: langsung terima laporan.
         private static void setupSession(final GeckoSession s, final Handler h, final boolean need) {
+            sSettled = false;
+            sSettledAt = 0;
             if (!need) {
                 sSessionSeq++;
                 sReadyAt = SystemClock.uptimeMillis();
@@ -299,6 +428,8 @@ public class MainActivity extends BridgeActivity {
                     public void onPageStop(GeckoSession session, boolean success) {
                         sPageStops++;
                         sPageOk = success;
+                        sSettled = true;
+                        sSettledAt = SystemClock.uptimeMillis();
                     }
 
                     @Override
@@ -342,6 +473,10 @@ public class MainActivity extends BridgeActivity {
                 public void onPageStop(GeckoSession session, boolean success) {
                     sPageStops++;
                     sPageOk = success;
+                    if (seq == sSessionSeq && stage[0] == 2) {   // halaman hasil refresh selesai dimuat
+                        sSettled = true;
+                        sSettledAt = SystemClock.uptimeMillis();
+                    }
                     if (seq == sSessionSeq && stage[0] == 0) h.postDelayed(doReload, 1500);   // beri waktu halaman menampilkan isi awal
                 }
 
@@ -511,6 +646,7 @@ public class MainActivity extends BridgeActivity {
                     final GeckoSession s = new GeckoSession(settings);
                     setupSession(s, h, true);   // muat, refresh, baru baca
                     s.open(sRuntime);
+                    attachHidden(s);
                     s.setActive(true);
                     withExtension(new Runnable() {
                         @Override
@@ -533,8 +669,10 @@ public class MainActivity extends BridgeActivity {
                                 st = sCheckState;
                                 at = sCheckStateAt;
                             }
-                            // idle ditahan sebentar: banner limit bisa muncul sedikit setelah kolom chat siap
-                            boolean conclusive = !st.isEmpty() && (!"idle".equals(st) || now - at >= 4500);
+                            // Status positif (limit, Continue, busy, belum login) langsung pasti. Idle baru pasti kalau halaman sudah
+                            // selesai dimuat dan tidak ada banner / tombol baru selama 9 detik (banner bisa muncul belakangan).
+                            boolean conclusive = !st.isEmpty() && (!"idle".equals(st)
+                                    || (sSettled && now - Math.max(at, sSettledAt) >= 9000));
                             if (conclusive || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
@@ -543,6 +681,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("url", sCheckUrl);
                                 }
                                 r.put("diag", buildDiag());
+                                detachHidden();
                                 try {
                                     s.close();
                                 } catch (Exception ignored) {
@@ -590,6 +729,7 @@ public class MainActivity extends BridgeActivity {
                     // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
                     setupSession(s, h, !"send".equals(mode));
                     s.open(sRuntime);
+                    attachHidden(s);
                     s.setActive(true);
                     withExtension(new Runnable() {
                         @Override
@@ -618,6 +758,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("deleted", sBaitDeleted);
                                 }
                                 r.put("diag", buildDiag());
+                                detachHidden();
                                 try {
                                     s.close();
                                 } catch (Exception ignored) {
