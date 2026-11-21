@@ -25,7 +25,7 @@
     return e;
   };
 
-  let backdrop = null, sheet = null, bodyEl = null, prevUrl = null, prevHistUrl = null;
+  let backdrop = null, sheet = null, bodyEl = null, prevUrl = null, prevHistUrl = null, prevHomeUrl = null;
 
   // ---------- Sheet ----------
   function close() {
@@ -36,6 +36,7 @@
     sheet = backdrop = bodyEl = null;
     if (prevUrl) { URL.revokeObjectURL(prevUrl); prevUrl = null; }
     if (prevHistUrl) { URL.revokeObjectURL(prevHistUrl); prevHistUrl = null; }
+    if (prevHomeUrl) { URL.revokeObjectURL(prevHomeUrl); prevHomeUrl = null; }
     setTimeout(() => { s.remove(); b.remove(); }, 300);
   }
 
@@ -134,7 +135,7 @@
     if (!bodyEl) return;
     if (prevHistUrl) URL.revokeObjectURL(prevHistUrl);
     prevHistUrl = hrec && hrec.blob ? URL.createObjectURL(hrec.blob) : null;
-    const hpv = h('div', { class: 'cprev fade', style: `aspect-ratio:${histRatio().toFixed(3)}` },
+    const hpv = h('div', { class: 'cprev fade' },
       h('img', { src: prevHistUrl || Auth.media.HIST_DEFAULT_URL, alt: '', draggable: 'false' }));
     const hMsg = msgEl();
     if (flashHist) { say(hMsg, flashHist, true); flashHist = ''; }
@@ -145,28 +146,60 @@
       if (f) await pickHist(f, hMsg);
     });
 
+    // --- Gambar beranda (latar halaman utama; tidak ikut tema) ---
+    const brec = await Auth.media.get('home');
+    if (!bodyEl) return;
+    if (prevHomeUrl) URL.revokeObjectURL(prevHomeUrl);
+    prevHomeUrl = brec && brec.blob ? URL.createObjectURL(brec.blob) : null;
+    const bpv = h('div', { class: 'cprev home' + (prevHomeUrl ? '' : ' empty') });
+    if (prevHomeUrl) bpv.append(h('img', { src: prevHomeUrl, alt: '', draggable: 'false' }));
+    else bpv.append(h('span', { text: 'Ikut tema' }));
+    const bfile = h('input', { type: 'file', accept: 'image/*', hidden: true });
+    bfile.addEventListener('change', async () => {
+      const f = bfile.files && bfile.files[0];
+      bfile.value = '';
+      if (f) await pickHome(f, hMsg);
+    });
+
+    // Tiga kotak sejajar: Halaman login | Slide riwayat | Beranda
+    const tile = (label, prev, onPick, onReset) => h('div', { class: 'ctile' },
+      h('button', { type: 'button', class: 'ctpick', 'aria-label': `Ganti gambar ${label}`, onclick: onPick }, prev),
+      h('span', { class: 'ctlabel', text: label }),
+      onReset ? h('button', { type: 'button', class: 'ctreset', text: 'Bawaan', onclick: onReset }) : h('span', { class: 'ctreset ph', text: ' ' }),
+    );
     bodyEl.append(h('div', { class: 'csec' },
       h('h3', { text: 'Tampilan' }),
-      h('p', { class: 'csub', text: 'Halaman login' }),
-      h('div', { class: 'crow' },
-        pv,
-        h('p', { class: 'cnote', text: 'Gambar atau video latar di halaman login. Rasio 9:16 (potret). Gambar bisa digeser dan di-zoom sebelum disimpan.' }),
+      h('div', { class: 'ctiles' },
+        tile('Halaman login', pv, () => file.click(),
+          rec ? async () => { await Auth.media.clear(); flashHist = 'Halaman login dikembalikan ke bawaan.'; await build(); } : null),
+        tile('Slide riwayat', hpv, () => hfile.click(),
+          hrec ? async () => { await Auth.media.clear('hist'); notifyHist(); flashHist = 'Slide riwayat dikembalikan ke bawaan.'; await build(); } : null),
+        tile('Beranda', bpv, () => bfile.click(),
+          brec ? async () => { await Auth.media.clear('home'); notifyHome(); flashHist = 'Beranda dikembalikan ke warna tema.'; await build(); } : null),
       ),
-      file,
-      cbtn('Pilih gambar / video', () => file.click()),
-      rec ? cbtn('Kembalikan bawaan', async () => { await Auth.media.clear(); flashBg = 'Dikembalikan ke gambar bawaan.'; await build(); }, 'alt') : null,
-      bgMsg,
-      h('div', { class: 'cdiv' }),
-      h('p', { class: 'csub', text: 'Slide riwayat' }),
-      h('div', { class: 'crow' },
-        hpv,
-        h('p', { class: 'cnote', text: 'Gambar di bagian bawah slide riwayat (setengah tinggi slide, tombol tampil di atasnya). Ujung atasnya otomatis memudar menyatu dengan warna dasar. Gambar bisa digeser dan di-zoom sebelum disimpan.' }),
-      ),
-      hfile,
-      cbtn('Pilih gambar', () => hfile.click()),
-      hrec ? cbtn('Kembalikan bawaan', async () => { await Auth.media.clear('hist'); notifyHist(); flashHist = 'Dikembalikan ke gambar bawaan.'; await build(); }, 'alt') : null,
-      hMsg,
+      p_note(),
+      file, hfile, bfile,
+      bgMsg, hMsg,
     ));
+  }
+  const p_note = () => h('p', { class: 'cnote', text: 'Ketuk kotak untuk mengganti gambar (halaman login juga bisa video). Gambar bisa digeser dan di-zoom sebelum disimpan. Gambar tidak ikut tema, jadi tetap sama saat tema diganti.' });
+
+  const notifyHome = () => window.dispatchEvent(new Event('cam:homebg'));
+  async function pickHome(f, out) {
+    say(out, '');
+    try {
+      if (!f.type.startsWith('image/')) { say(out, 'Untuk beranda, file harus gambar.'); return; }
+      const ratio = Math.min(0.75, Math.max(0.3, window.innerWidth / window.innerHeight));
+      const blob = await cropImage(f, { ratio, outW: 720, title: 'Atur gambar beranda' });
+      if (!blob) return;
+      await Auth.media.set({ kind: 'image', blob, type: blob.type }, 'home');
+      notifyHome();
+      flashHist = 'Gambar beranda disimpan.';
+      await build();
+    } catch (e) {
+      console.error(e);
+      say(out, 'Gagal menyimpan. Coba file lain.');
+    }
   }
 
   // Rasio kotak gambar slide riwayat (lebar slide : sepertiga tinggi layar), dibatasi supaya crop tetap nyaman
