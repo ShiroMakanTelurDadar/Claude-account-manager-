@@ -146,7 +146,7 @@
       if (f) await pickHist(f, hMsg);
     });
 
-    // --- Gambar beranda (latar halaman utama; tidak ikut tema) ---
+    // --- Gambar beranda (latar halaman utama; terikat ke tema) ---
     const brec = await Auth.media.get('home');
     if (!bodyEl) return;
     if (prevHomeUrl) URL.revokeObjectURL(prevHomeUrl);
