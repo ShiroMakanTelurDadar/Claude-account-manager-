@@ -151,9 +151,8 @@
     if (!bodyEl) return;
     if (prevHomeUrl) URL.revokeObjectURL(prevHomeUrl);
     prevHomeUrl = brec && brec.blob ? URL.createObjectURL(brec.blob) : null;
-    const bpv = h('div', { class: 'cprev home' + (prevHomeUrl ? '' : ' empty') });
-    if (prevHomeUrl) bpv.append(h('img', { src: prevHomeUrl, alt: '', draggable: 'false' }));
-    else bpv.append(h('span', { text: 'Ikut tema' }));
+    const bpv = h('div', { class: 'cprev home' },
+      h('img', { src: prevHomeUrl || Auth.media.HOME_DEFAULT_URL, alt: '', draggable: 'false' }));
     const bfile = h('input', { type: 'file', accept: 'image/*', hidden: true });
     bfile.addEventListener('change', async () => {
       const f = bfile.files && bfile.files[0];
@@ -175,7 +174,7 @@
         tile('Slide riwayat', hpv, () => hfile.click(),
           hrec ? async () => { await Auth.media.clear('hist'); notifyHist(); flashHist = 'Slide riwayat dikembalikan ke bawaan.'; await build(); } : null),
         tile('Beranda', bpv, () => bfile.click(),
-          brec ? async () => { await Auth.media.clear('home'); notifyHome(); flashHist = 'Beranda dikembalikan ke warna tema.'; await build(); } : null),
+          brec ? async () => { await Auth.media.clear('home'); notifyHome(); flashHist = 'Beranda dikembalikan ke gambar bawaan.'; await build(); } : null),
       ),
       p_note(),
       file, hfile, bfile,
