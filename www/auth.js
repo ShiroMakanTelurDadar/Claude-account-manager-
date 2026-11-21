@@ -62,16 +62,22 @@
       q.onerror = () => rej(q.error);
     });
   };
+  // Tema Petronas (default) memakai kunci lama supaya gambar buatan pengguna yang sudah ada tetap terbaca; tema lain punya kunci sendiri.
+  const themeId = () => (window.Theme && Theme.get()) || 'default';
+  const themeKey = (k) => (themeId() === 'default' ? k : k + '@' + themeId());
+  const ASSET_SUFFIX = { default: 'petronas', oracle: 'oracle' };
+  const themeAsset = (name) => 'assets/' + name + '-' + (ASSET_SUFFIX[themeId()] || 'petronas') + '.jpg';
   const media = {
-    DEFAULT_URL: 'assets/login-default.jpg',
-    HOME_DEFAULT_URL: 'assets/home-default.jpg',      // gambar bawaan beranda
-    HIST_DEFAULT_URL: 'assets/history-default.jpg',   // gambar bawaan slide riwayat
+    // Gambar bawaan dan gambar buatan pengguna terikat ke tema yang sedang dipakai
+    get DEFAULT_URL() { return themeAsset('login'); },         // gambar bawaan halaman login
+    get HOME_DEFAULT_URL() { return themeAsset('home'); },     // gambar bawaan beranda
+    get HIST_DEFAULT_URL() { return themeAsset('history'); },  // gambar bawaan slide riwayat
     W: 720, H: 1280,                 // ukuran hasil crop gambar; rasio 9:16
     RATIO: 9 / 16,
     // Kunci: 'bg' = latar halaman login (bawaan), 'hist' = gambar di bawah slide riwayat
-    async get(k = 'bg') { try { return (await idbOp('readonly', (s) => s.get(k))) || null; } catch { return null; } },
-    async set(rec, k = 'bg') { await idbOp('readwrite', (s) => s.put(rec, k)); },
-    async clear(k = 'bg') { try { await idbOp('readwrite', (s) => s.delete(k)); } catch {} },
+    async get(k = 'bg') { k = themeKey(k); try { return (await idbOp('readonly', (s) => s.get(k))) || null; } catch { return null; } },
+    async set(rec, k = 'bg') { k = themeKey(k); await idbOp('readwrite', (s) => s.put(rec, k)); },
+    async clear(k = 'bg') { k = themeKey(k); try { await idbOp('readwrite', (s) => s.delete(k)); } catch {} },
   };
 
   // ---------- Kripto ----------
