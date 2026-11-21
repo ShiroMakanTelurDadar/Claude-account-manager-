@@ -24,7 +24,7 @@ const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat be
 const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
 const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
-const CHECK_TIMEOUT = 24000;     // ms: batas waktu cek satu akun di belakang layar (dihitung sesudah halaman di-refresh; muat awal + refresh menambah sekitar 5-15 detik)
+const CHECK_TIMEOUT = 40000;     // ms: batas waktu cek satu akun di belakang layar (dihitung sesudah halaman di-refresh; muat awal + refresh menambah sekitar 5-15 detik)
 const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
@@ -1215,6 +1215,7 @@ async function runChecks(list, opts = {}) {
   const startedAt = Date.now();
   let known = 0;   // jumlah akun yang halamannya terbaca (bukan "tidak terbaca")
   const fails = [];   // catatan kegagalan per akun untuk detail riwayat
+  const rows = [];    // hasil per akun, ditulis ke riwayat
   try {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
@@ -1235,6 +1236,7 @@ async function runChecks(list, opts = {}) {
       noteFail(fails, a, 'Cek', res);
       lastLabel = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
       tally[lastLabel] = (tally[lastLabel] || 0) + 1;
+      rows.push(`${shortName(a.name)}: ${lastLabel}`);
     }
   } finally {
     checking = false;
@@ -1248,7 +1250,7 @@ async function runChecks(list, opts = {}) {
     const who = opts.label || (opts.auto ? 'Otomatis' : 'Manual');
     const sum = list.length === 1
       ? `${shortName(list[0].name)}: ${lastLabel || CHECK_LABEL.unknown}`
-      : Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ');
+      : (rows.length && rows.length <= 6 ? rows.join(', ') : Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', '));
     addHistory('check', !aborted && known > 0,
       aborted ? `${who} · ${abortReason(aborted)}${sum ? ` (${sum})` : ''}`
         : `${who} · ${sum || 'tidak ada hasil'}`, startedAt, { fails });
@@ -1284,7 +1286,19 @@ function onAutoChange() {
   toast(m ? `Cek otomatis semua akun tiap ${label}.` : 'Cek otomatis dimatikan.');
 }
 
+// Layanan latar depan (notifikasi kecil) menjaga aplikasi tetap hidup selama cek otomatis atau pancingan aktif
+let keepAliveOn = null;
+function syncKeepAlive() {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.keepAlive) return;
+  const want = !!(settings.autoMin || settings.baitOn);
+  if (want === keepAliveOn) return;
+  keepAliveOn = want;
+  try { G.keepAlive({ on: want }).catch(() => { keepAliveOn = null; }); } catch { keepAliveOn = null; }
+}
+
 function updateAutoHint() {
+  syncKeepAlive();
   if (!autoHint) return;
   let t;
   if (!settings.autoMin) {
