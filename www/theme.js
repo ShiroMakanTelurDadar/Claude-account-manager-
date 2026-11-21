@@ -5,7 +5,7 @@
   const KEY = 'theme';
   // colors = isi kotak pilihan di Control (tiga warna palet, dari kiri atas ke kanan bawah)
   const THEMES = [
-    { id: 'default', name: 'Default', colors: ['#04070c', '#38bdf8', '#bae6fd'], bar: '#04070c' },
+    { id: 'default', name: 'Petronas', colors: ['#04070c', '#38bdf8', '#bae6fd'], bar: '#04070c' },
     { id: 'oracle', name: 'Oracle', colors: ['#0a0504', '#dc2626', '#fbbf24'], bar: '#0a0504' },
   ];
   const byId = (id) => THEMES.find((t) => t.id === id) || THEMES[0];
