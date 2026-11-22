@@ -82,6 +82,7 @@ async function loadAccounts() {
   } catch { return []; }
 }
 async function saveAccounts() {
+  syncBg();
   const raw = JSON.stringify(accounts);
   try {
     if (native && P.Preferences) await P.Preferences.set({ key: STORE_KEY, value: raw });
@@ -151,6 +152,7 @@ function addHistory(kind, ok, detail, at, info) {
 }
 
 async function saveSettings() {
+  syncBg();
   const raw = JSON.stringify(settings);
   try {
     if (native && P.Preferences) await P.Preferences.set({ key: SETTINGS_KEY, value: raw });
@@ -1328,6 +1330,62 @@ function updateAutoHint() {
   if (autoHint.textContent !== t) autoHint.textContent = t;
 }
 
+// ---------- Cek saat aplikasi ditutup ----------
+// Jadwal (berkala, sebelum / sesudah jam tenang) juga dijalankan native lewat alarm sistem, supaya tetap jalan walau aplikasi ditutup.
+// syncBg mengirim pengaturan + daftar akun ke native. drainBg mengambil hasil cek yang dijalankan native saat aplikasi tertutup.
+let bgReady = false;   // false sampai hasil native diambil, supaya data lama tidak menimpa data native
+let bgSyncTimer = null;
+function syncBg(now = false) {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.bgConfigure || !bgReady) return;
+  clearTimeout(bgSyncTimer);
+  const push = () => {
+    const payload = {
+      on: !!(settings.autoMin || settings.quietOn),
+      autoMin: settings.autoMin,
+      quietOn: settings.quietOn,
+      quietStart: settings.quietStart,
+      quietEnd: settings.quietEnd,
+      lastAuto: settings.lastAuto,
+      quietEndDay: settings.quietEndDay,
+      quietPreDay: settings.quietPreDay,
+      accounts: accounts.map((a) => ({ id: a.id, name: a.name || '', url: a.chatUrl || CLAUDE_URL, limit: a.status === 'working' })),
+    };
+    try { return G.bgConfigure(payload).catch(() => {}); } catch { return null; }
+  };
+  if (now) return push();
+  bgSyncTimer = setTimeout(push, 1500);
+  return null;
+}
+
+async function drainBg() {
+  const G = P.GeckoBrowser;
+  if (!native || !G || !G.bgTake) return;
+  let r;
+  try { r = await G.bgTake(); } catch { return; }
+  if (!r) return;
+  let changed = false;
+  if (typeof r.lastAuto === 'number' && r.lastAuto > settings.lastAuto) { settings.lastAuto = r.lastAuto; changed = true; }
+  if (typeof r.quietEndDay === 'string' && r.quietEndDay > settings.quietEndDay) { settings.quietEndDay = r.quietEndDay; changed = true; }
+  if (typeof r.quietPreDay === 'string' && r.quietPreDay > settings.quietPreDay) { settings.quietPreDay = r.quietPreDay; changed = true; }
+  for (const run of (r.runs || [])) {
+    const rows = [];
+    let known = 0;
+    for (const it of (run.items || [])) {
+      const a = accounts.find((x) => x.id === it.id);
+      if (!a) continue;
+      applyCheck(a, { state: it.state, text: it.text, url: it.url });
+      if (it.state && it.state !== 'unknown') known++;
+      rows.push(`${shortName(a.name)}: ${CHECK_LABEL[it.state] || CHECK_LABEL.unknown}`);
+    }
+    const first = (run.items || [])[0] || {};
+    const where = first.view ? `, tampilan: ${first.view}` : '';
+    const sum = rows.length ? rows.join(', ') : (run.err ? abortReason(run.err) : 'tidak ada hasil');
+    addHistory('check', !run.err && known > 0, `${run.label || 'Otomatis'} (aplikasi tertutup${where}) · ${sum}`, run.at);
+  }
+  if (changed) saveSettings();
+}
+
 // ---------- Jam tenang ----------
 const toMin = (hhmm) => { const [h, m] = String(hhmm).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
 const nowMin = (d = new Date()) => d.getHours() * 60 + d.getMinutes();
@@ -1344,6 +1402,25 @@ function inQuiet(d = new Date()) {
 const checkable = () => accounts.filter((a) => a.status !== 'working');
 
 function openQuietEditor() {
+  const G = P.GeckoBrowser;
+  const bgInfo = el('div', { class: 'hint2', text: 'Memeriksa izin...' });
+  const showBg = async () => {
+    if (!native || !G || !G.bgStatus) { bgInfo.textContent = 'Fitur ini ada di aplikasi Android versi terbaru (APK baru).'; return; }
+    try {
+      const r = await G.bgStatus();
+      bgInfo.textContent = `Tampil di atas aplikasi lain: ${r.overlay ? 'diizinkan' : 'BELUM diizinkan'}. Baterai tanpa batasan: ${r.battery ? 'ya' : 'BELUM'}. Alarm tepat waktu: ${r.exact ? 'ya' : 'BELUM'}.`;
+    } catch { bgInfo.textContent = 'Status izin tidak terbaca.'; }
+  };
+  const bgOpen = (what) => async () => {
+    try { await G.bgOpen({ what }); } catch { toast('Tidak bisa membuka pengaturan.'); }
+  };
+  const bgTest = async () => {
+    if (!native || !G || !G.bgTest) { toast('Perlu APK terbaru.'); return; }
+    await syncBg(true);
+    try { await G.bgTest(); } catch { toast('Uji gagal dijadwalkan.'); return; }
+    toast('Uji jalan 20 detik lagi. Tutup aplikasi sekarang, lalu buka lagi. Hasilnya ada di Riwayat.', 9000);
+  };
+  showBg();
   const on = el('input', { type: 'checkbox' });
   on.checked = settings.quietOn;
   const st = el('input', { type: 'time' });
@@ -1368,6 +1445,16 @@ function openQuietEditor() {
     el('label', { class: 'hint2' }, on, ' Aktifkan jam tenang'),
     el('div', { class: 'hint2', text: 'Mulai' }), st,
     el('div', { class: 'hint2', text: 'Selesai' }), en,
+    el('div', { class: 'mtitle', text: 'Cek saat aplikasi ditutup' }),
+    el('div', { class: 'hint2', text: 'Jadwal cek tetap jalan lewat alarm sistem walau aplikasi ditutup. Butuh izin di bawah. Di Xiaomi: aktifkan Autostart, kunci aplikasi di daftar aplikasi terbaru, dan atur baterai ke "Tanpa batasan".' }),
+    bgInfo,
+    el('div', { class: 'chips' },
+      el('button', { type: 'button', class: 'chip', text: 'Izin tampil di atas aplikasi lain', onclick: bgOpen('overlay') }),
+      el('button', { type: 'button', class: 'chip', text: 'Baterai tanpa batasan', onclick: bgOpen('battery') }),
+      el('button', { type: 'button', class: 'chip', text: 'Alarm tepat waktu', onclick: bgOpen('exact') }),
+      el('button', { type: 'button', class: 'chip', text: '↻ Periksa izin', onclick: showBg }),
+      el('button', { type: 'button', class: 'chip', text: 'Uji 20 detik', onclick: bgTest }),
+    ),
     el('div', { class: 'mact' },
       el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
       el('button', { type: 'button', class: 'btn sm', text: 'Simpan', onclick: save }),
@@ -2017,8 +2104,11 @@ document.getElementById('addForm').addEventListener('submit', (e) => {
   initTools();
   initHistory();
   render();
+  await drainBg();
+  bgReady = true;
+  syncBg();
   if (Auth.notice) toast(Auth.notice, 9000);
   scheduleAll();
   setInterval(tick, 1000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { render(); drainLimitEvents(); checkDue(); drainBg(); } });
 })();
