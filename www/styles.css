@@ -612,3 +612,12 @@ body > header > h1 { font-size: 16px; }
 .bg .homeimg.on { display: block; }
 .bg .homeimg img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .bg .homeimg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,.55)); }
+
+/* Petunjuk cek pertama: teks mengambang tanpa latar, panah menunjuk tombol Cek akun */
+.firstguide { position: relative; margin: 2px 6px 8px; padding: 0; background: none; border: 0; pointer-events: none; }
+.firstguide .fg-arrow { width: 38px; margin-left: 24px; text-align: center; font-size: 26px; line-height: 1; font-weight: 800; color: #fbbf24; text-shadow: 0 0 10px rgba(251, 191, 36, .55); animation: fg-bob 1.1s ease-in-out infinite; }
+.firstguide .fg-text { margin-top: 2px; font-size: 13px; line-height: 1.45; color: #e6f4ff; text-shadow: 0 1px 6px rgba(0, 0, 0, .85); }
+.firstguide .fg-hl { color: #fbbf24; font-weight: 800; }
+@keyframes fg-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@media (prefers-reduced-motion: reduce) { .firstguide .fg-arrow { animation: none; } }
+.tools .tbtn.running { opacity: .85; }
