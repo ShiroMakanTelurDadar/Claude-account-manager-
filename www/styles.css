@@ -99,7 +99,7 @@ button { cursor: pointer; border: 0; background: none; }
   position: relative; overflow: hidden;
   background: var(--acc-bg);
   border: 1px solid var(--line); border-radius: 18px;
-  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  /* varian B: tanpa blur latar di kartu akun (backdrop-filter berat di Android) */
   box-shadow: 0 10px 30px -18px rgba(0, 0, 0, .9);
   transition: border-color .35s, box-shadow .35s;
 }
