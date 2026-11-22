@@ -546,10 +546,10 @@ header h1 { text-align: center; }
 .sg b { font-size: 14px; }
 
 /* Cek akun, waktu cek, pancingan: satu baris */
-.tools { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 50px; gap: 6px; margin: 0 4px 4px; }
+.tools { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 46px; gap: 6px; margin: 0 4px 4px; }
 .tools .tbtn, .tools .tsel { height: 38px; font-size: 12px; min-width: 0; padding-left: 8px; padding-right: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tools .tsel { padding-right: 22px; background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%; text-overflow: clip; }
-.tools .tbtn.sq { width: 50px; padding: 0; font-size: 17px; }
+.tools .tbtn.sq { width: 46px; padding: 0; font-size: 17px; }
 
 /* Tombol 🎣: tepi tipis menyala tetap (tidak berkedip). Hijau = ON, merah = OFF */
 .tbtn.baitsw { border-width: 1px; }
