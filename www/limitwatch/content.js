@@ -17,6 +17,8 @@
   const CHALLENGE_RE = /just a moment|attention required|verify you are human|checking your browser|performing security verification/i;
   const SEND_LABEL_RE = /^(send|send message|kirim|kirim pesan)/i;
   const STOP_LABEL_RE = /^(stop|stop response|stop generating|berhenti|hentikan)/i;
+  // Teks status yang berdiri sendiri saat Claude bekerja ("Working on it", "Run a command"). "Ran 5 commands" (sudah selesai) sengaja tidak cocok.
+  const BUSY_TEXT_RE = /^(working on it|thinking|run(ning)? (a |\d+ )?commands?|sedang bekerja|sedang berpikir|menjalankan perintah)\s*(\.{2,}|…)?$/i;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const send = async (m) => {
@@ -99,6 +101,17 @@
     return (found.find((t) => HAS_TIME.test(t)) || found[0]).slice(0, 300);
   }
 
+  function hasBusyText() {
+    if (!document.body) return false;
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const v = (n.nodeValue || '').trim();
+      if (v.length > 0 && v.length < 30 && BUSY_TEXT_RE.test(v) && vis(n.parentElement)) return true;
+    }
+    return false;
+  }
+
   const hasMessages = () => !!document.querySelector('[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [data-test-render-count]');
 
   function readState() {
@@ -107,9 +120,10 @@
     if (lt && !(HAS_TIME.test(lt) || !resumeBtn())) return { state: 'resume', text: '' };
     if (lt) return { state: 'limit', text: lt };
     if (isLoggedOut()) return { state: 'loggedout', text: '' };
-    if (stopBtn()) return { state: 'busy', text: '' };
+    if (stopBtn() || hasBusyText()) return { state: 'busy', text: '' };
     if (resumeBtn()) return { state: 'resume', text: '' };
-    if (composer()) return { state: 'idle', text: '' };
+    // Di chat yang sudah ada, "free" baru pasti kalau pesan chat sudah tampil dan tidak ada tanda limit. Kolom chat saja belum cukup.
+    if (composer()) return (/^\/chat\//.test(location.pathname) && !hasMessages()) ? { state: 'unknown', text: '' } : { state: 'idle', text: '' };
     return { state: 'unknown', text: '' };
   }
 
@@ -158,14 +172,20 @@
       await sleep(400);
       if (!composerText(composer()).includes(text.trim().slice(0, 20))) return 'text-not-inserted';
     }
-    const b = await waitFor(sendBtn, 3000, 150);
-    if (b) click(b);
-    else {
+    const pressEnter = () => {
+      c.focus();
       for (const t of ['keydown', 'keypress', 'keyup']) {
         c.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
       }
-    }
-    const sent = await waitFor(() => stopBtn() || hasMessages() || !composerText(composer()), 6000, 150);
+    };
+    const submitted = () => stopBtn() || !composerText(composer());
+    const b = await waitFor(sendBtn, 3000, 150);
+    if (b) click(b); else pressEnter();
+    if (await waitFor(submitted, 3500, 150)) return '';
+    // Belum terkirim: coba cara satunya (tombol kirim <-> Enter), sekali
+    const b2 = sendBtn();
+    if (b) pressEnter(); else if (b2) click(b2); else pressEnter();
+    const sent = await waitFor(() => submitted() || (hasMessages() && !composerText(composer())), 6000, 150);
     return sent ? '' : 'not-submitted';
   }
 
