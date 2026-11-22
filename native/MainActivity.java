@@ -2,10 +2,13 @@ package com.local.claudeaccountmanager;
 
 import android.animation.ValueAnimator;
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.ClipData;
@@ -19,6 +22,7 @@ import android.graphics.Color;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
 import android.graphics.Paint;
+import android.graphics.PixelFormat;
 import android.graphics.RectF;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -31,10 +35,12 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -48,6 +54,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.mozilla.geckoview.GeckoResult;
 import org.mozilla.geckoview.GeckoRuntime;
@@ -62,6 +69,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Locale;
 
 public class MainActivity extends BridgeActivity {
 
@@ -69,6 +78,13 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(GeckoBrowser.class);
         super.onCreate(savedInstanceState);
+        sActivityAlive = true;
+    }
+
+    @Override
+    public void onDestroy() {
+        sActivityAlive = false;
+        super.onDestroy();
     }
 
     // Hasil pengecekan satu akun di sesi browser tersembunyi
@@ -236,6 +252,104 @@ public class MainActivity extends BridgeActivity {
                     });
         }
 
+        // ---- Cek saat aplikasi ditutup (lihat BgScheduler) ----
+        // JS mengirim pengaturan jadwal + daftar akun. Native memasang alarm sistem dari situ.
+        @PluginMethod
+        public void bgConfigure(PluginCall call) {
+            try {
+                Context c = getContext().getApplicationContext();
+                JSONObject cfg = BgStore.cfg(c);
+                JSObject d = call.getData();
+                cfg.put("on", d.optBoolean("on", false));
+                cfg.put("autoMin", d.optInt("autoMin", 0));
+                cfg.put("quietOn", d.optBoolean("quietOn", false));
+                cfg.put("quietStart", d.optString("quietStart", "01:00"));
+                cfg.put("quietEnd", d.optString("quietEnd", "05:00"));
+                // Yang lebih baru menang: native bisa sudah mengecek saat aplikasi tertutup
+                cfg.put("lastAuto", Math.max(cfg.optLong("lastAuto", 0), d.optLong("lastAuto", 0)));
+                String ed = d.optString("quietEndDay", "");
+                if (ed.compareTo(cfg.optString("quietEndDay", "")) > 0) cfg.put("quietEndDay", ed);
+                String pd = d.optString("quietPreDay", "");
+                if (pd.compareTo(cfg.optString("quietPreDay", "")) > 0) cfg.put("quietPreDay", pd);
+                JSONArray accts = d.optJSONArray("accounts");
+                cfg.put("accounts", accts == null ? new JSONArray() : accts);
+                BgStore.putCfg(c, cfg);
+                BgScheduler.schedule(c);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("bgConfigure gagal: " + e.getMessage());
+            }
+        }
+
+        // Ambil hasil cek yang dijalankan native saat aplikasi tertutup (sekali ambil, lalu dikosongkan)
+        @PluginMethod
+        public void bgTake(PluginCall call) {
+            Context c = getContext().getApplicationContext();
+            JSONObject cfg = BgStore.cfg(c);
+            JSObject r = new JSObject();
+            r.put("runs", BgStore.takeRuns(c));
+            r.put("lastAuto", cfg.optLong("lastAuto", 0));
+            r.put("quietEndDay", cfg.optString("quietEndDay", ""));
+            r.put("quietPreDay", cfg.optString("quietPreDay", ""));
+            call.resolve(r);
+        }
+
+        // Status izin yang dibutuhkan cek saat aplikasi tertutup
+        @PluginMethod
+        public void bgStatus(PluginCall call) {
+            Context c = getContext().getApplicationContext();
+            JSObject r = new JSObject();
+            boolean overlay = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(c);
+            boolean battery = true;
+            boolean exact = true;
+            try {
+                PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
+                if (Build.VERSION.SDK_INT >= 23 && pm != null) battery = pm.isIgnoringBatteryOptimizations(c.getPackageName());
+                AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+                if (Build.VERSION.SDK_INT >= 31 && am != null) exact = am.canScheduleExactAlarms();
+            } catch (Exception ignored) {
+            }
+            r.put("overlay", overlay);
+            r.put("battery", battery);
+            r.put("exact", exact);
+            r.put("next", BgScheduler.nextTrigger(BgStore.cfg(c), System.currentTimeMillis()));
+            call.resolve(r);
+        }
+
+        // Buka layar pengaturan izin: overlay, battery, exact
+        @PluginMethod
+        public void bgOpen(PluginCall call) {
+            String what = call.getString("what", "overlay");
+            Context c = getContext();
+            Uri pkg = Uri.parse("package:" + c.getPackageName());
+            try {
+                Intent i;
+                if ("overlay".equals(what)) i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkg);
+                else if ("battery".equals(what)) i = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg);
+                else if ("exact".equals(what) && Build.VERSION.SDK_INT >= 31) i = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, pkg);
+                else i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                c.startActivity(i);
+                call.resolve();
+            } catch (Exception e) {
+                try {
+                    Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg);
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    c.startActivity(i);
+                    call.resolve();
+                } catch (Exception e2) {
+                    call.reject("Tidak bisa membuka pengaturan: " + e2.getMessage());
+                }
+            }
+        }
+
+        // Uji: jalankan pengecekan native 20 detik lagi (aplikasi boleh ditutup sekarang)
+        @PluginMethod
+        public void bgTest(PluginCall call) {
+            BgScheduler.armAt(getContext().getApplicationContext(), System.currentTimeMillis() + 20000L, "Uji");
+            call.resolve();
+        }
+
         // Mengambil dan mengosongkan antrean laporan halaman
         @PluginMethod
         public void takePending(PluginCall call) {
@@ -307,6 +421,393 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    // ======== Cek otomatis saat aplikasi ditutup ========
+    // Jadwal (berkala, sebelum dan sesudah jam tenang) dihitung di sini, bukan di halaman aplikasi (WebView), karena halaman itu mati
+    // begitu aplikasi ditutup. Aplikasi mengirim salinan pengaturan + daftar akun lewat bgConfigure. Alarm sistem membangunkan BgReceiver,
+    // lalu BgCheckService mengecek akun yang belum Limit satu per satu di sesi tersembunyi. Hasil disimpan dan diambil aplikasi
+    // saat dibuka lagi (bgTake). Kalau aplikasi sedang hidup (sActivityAlive), jadwal dijalankan oleh aplikasi sendiri dan native diam.
+    static volatile boolean sActivityAlive = false;
+
+    public static class BgStore {
+        static SharedPreferences sp(Context c) {
+            return c.getSharedPreferences("bgcheck", Context.MODE_PRIVATE);
+        }
+
+        static synchronized JSONObject cfg(Context c) {
+            try {
+                return new JSONObject(sp(c).getString("cfg", "{}"));
+            } catch (Exception e) {
+                return new JSONObject();
+            }
+        }
+
+        static synchronized void putCfg(Context c, JSONObject o) {
+            sp(c).edit().putString("cfg", o.toString()).apply();
+        }
+
+        static synchronized JSONArray runs(Context c) {
+            try {
+                return new JSONArray(sp(c).getString("runs", "[]"));
+            } catch (Exception e) {
+                return new JSONArray();
+            }
+        }
+
+        static synchronized void addRun(Context c, JSONObject run) {
+            try {
+                JSONArray old = runs(c);
+                JSONArray n = new JSONArray();
+                for (int i = Math.max(0, old.length() - 29); i < old.length(); i++) n.put(old.get(i));
+                n.put(run);
+                sp(c).edit().putString("runs", n.toString()).apply();
+            } catch (Exception ignored) {
+            }
+        }
+
+        static synchronized JSONArray takeRuns(Context c) {
+            JSONArray r = runs(c);
+            sp(c).edit().putString("runs", "[]").apply();
+            return r;
+        }
+    }
+
+    public static class BgScheduler {
+        static final String ACTION_RUN = "com.local.claudeaccountmanager.BG_RUN";
+
+        static int mins(String hhmm) {
+            try {
+                String[] p = hhmm.split(":");
+                return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]);
+            } catch (Exception e) {
+                return 0;
+            }
+        }
+
+        static int minOfDay(long ms) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(ms);
+            return c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE);
+        }
+
+        static String dayKey(long ms) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(ms);
+            return String.format(Locale.US, "%04d-%02d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH));
+        }
+
+        static boolean quietOn(JSONObject cfg) {
+            return cfg.optBoolean("quietOn", false)
+                    && mins(cfg.optString("quietStart", "01:00")) != mins(cfg.optString("quietEnd", "05:00"));
+        }
+
+        static boolean inQuiet(JSONObject cfg, long ms) {
+            if (!quietOn(cfg)) return false;
+            int s = mins(cfg.optString("quietStart", "01:00"));
+            int e = mins(cfg.optString("quietEnd", "05:00"));
+            int n = minOfDay(ms);
+            return s < e ? (n >= s && n < e) : (n >= s || n < e);
+        }
+
+        // Waktu pertama sesudah 'from' pada menit-dalam-hari m
+        static long nextAt(long from, int m) {
+            Calendar c = Calendar.getInstance();
+            c.setTimeInMillis(from);
+            c.set(Calendar.HOUR_OF_DAY, m / 60);
+            c.set(Calendar.MINUTE, m % 60);
+            c.set(Calendar.SECOND, 0);
+            c.set(Calendar.MILLISECOND, 0);
+            if (c.getTimeInMillis() <= from) c.add(Calendar.DAY_OF_YEAR, 1);
+            return c.getTimeInMillis();
+        }
+
+        // Pemicu yang jatuh tempo sekarang (label), atau "" kalau tidak ada. Aturannya sama dengan runScheduledTriggers di app.js.
+        static String due(JSONObject cfg, long now) {
+            if (!cfg.optBoolean("on", false)) return "";
+            int s = mins(cfg.optString("quietStart", "01:00"));
+            int e = mins(cfg.optString("quietEnd", "05:00"));
+            int n = minOfDay(now);
+            String today = dayKey(now);
+            boolean q = quietOn(cfg);
+            if (q && ((n - e + 1440) % 1440) < 20 && !today.equals(cfg.optString("quietEndDay", ""))) return "Selesai jam tenang";
+            int until = (s - n + 1440) % 1440;
+            if (q && until > 0 && until <= 5 && !today.equals(cfg.optString("quietPreDay", ""))) return "Sebelum jam tenang";
+            int autoMin = cfg.optInt("autoMin", 0);
+            if (autoMin > 0 && !inQuiet(cfg, now) && now >= cfg.optLong("lastAuto", 0) + autoMin * 60000L - 5000L) return "Otomatis";
+            return "";
+        }
+
+        static long nextTrigger(JSONObject cfg, long now) {
+            if (!cfg.optBoolean("on", false)) return 0;
+            if (!due(cfg, now).isEmpty()) return now + 5000L;
+            int s = mins(cfg.optString("quietStart", "01:00"));
+            int e = mins(cfg.optString("quietEnd", "05:00"));
+            long best = Long.MAX_VALUE;
+            int autoMin = cfg.optInt("autoMin", 0);
+            if (autoMin > 0) {
+                long t = Math.max(cfg.optLong("lastAuto", 0) + autoMin * 60000L, now + 5000L);
+                if (inQuiet(cfg, t)) t = nextAt(t, e) + 10000L;
+                best = Math.min(best, t);
+            }
+            if (quietOn(cfg)) {
+                best = Math.min(best, nextAt(now, e) + 10000L);
+                best = Math.min(best, nextAt(now, (s - 5 + 1440) % 1440) + 10000L);
+            }
+            return best == Long.MAX_VALUE ? 0 : best;
+        }
+
+        static PendingIntent pi(Context c, String force) {
+            Intent i = new Intent(c, BgReceiver.class).setAction(ACTION_RUN);
+            if (force != null) i.putExtra("force", force);
+            int fl = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+            return PendingIntent.getBroadcast(c, 7201, i, fl);
+        }
+
+        static void armAt(Context c, long t, String force) {
+            try {
+                AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+                if (am == null) return;
+                PendingIntent p = pi(c, force);
+                am.cancel(p);
+                if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, p);
+                else if (Build.VERSION.SDK_INT >= 23) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, p);
+                else am.setExact(AlarmManager.RTC_WAKEUP, t, p);
+            } catch (Exception ignored) {
+            }
+        }
+
+        static void schedule(Context c) {
+            long t = nextTrigger(BgStore.cfg(c), System.currentTimeMillis());
+            if (t > 0) {
+                armAt(c, t, null);
+            } else {
+                try {
+                    AlarmManager am = (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
+                    if (am != null) am.cancel(pi(c, null));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    // Menerima alarm (dan boot / pembaruan aplikasi: hanya memasang ulang alarm, tanpa mengecek)
+    public static class BgReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context ctx, Intent intent) {
+            try {
+                Context app = ctx.getApplicationContext();
+                String act = intent == null ? null : intent.getAction();
+                if (!BgScheduler.ACTION_RUN.equals(act)) {
+                    BgScheduler.schedule(app);
+                    return;
+                }
+                String force = intent.getStringExtra("force");
+                long now = System.currentTimeMillis();
+                String label = force != null ? force : BgScheduler.due(BgStore.cfg(app), now);
+                if (label.isEmpty()) {
+                    BgScheduler.schedule(app);
+                    return;
+                }
+                if (force == null && sActivityAlive) {
+                    // Aplikasi hidup: jadwal dijalankan oleh aplikasi sendiri. Cek lagi nanti.
+                    BgScheduler.armAt(app, now + 5 * 60000L, null);
+                    return;
+                }
+                // Jaring pengaman: kalau layanan gagal jalan, alarm ini mencoba lagi 10 menit kemudian
+                BgScheduler.armAt(app, now + 10 * 60000L, null);
+                Intent si = new Intent(app, BgCheckService.class);
+                si.putExtra("label", label);
+                if (Build.VERSION.SDK_INT >= 26) app.startForegroundService(si);
+                else app.startService(si);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    // Layanan latar depan sementara: mengecek akun yang belum Limit satu per satu, menyimpan hasil, lalu berhenti
+    public static class BgCheckService extends Service {
+        private static boolean sBusy = false;
+        private PowerManager.WakeLock wake;
+
+        @Override
+        public IBinder onBind(Intent intent) {
+            return null;
+        }
+
+        @Override
+        public int onStartCommand(Intent intent, int flags, int startId) {
+            final String label = intent == null || intent.getStringExtra("label") == null ? "Otomatis" : intent.getStringExtra("label");
+            try {
+                final String ch = "bgcheck";
+                if (Build.VERSION.SDK_INT >= 26) {
+                    NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    if (nm != null) nm.createNotificationChannel(new NotificationChannel(ch, "Cek akun terjadwal", NotificationManager.IMPORTANCE_LOW));
+                }
+                Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                b.setContentTitle("Account Manager")
+                        .setContentText("Mengecek akun di latar belakang...")
+                        .setSmallIcon(android.R.drawable.stat_notify_sync)
+                        .setOngoing(true);
+                if (Build.VERSION.SDK_INT >= 29) startForeground(7102, b.build(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+                else startForeground(7102, b.build());
+            } catch (Exception ignored) {
+            }
+            if (sBusy) return START_NOT_STICKY;
+            sBusy = true;
+            try {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null) {
+                    wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "claudeaccountmanager:bgcheck");
+                    wake.setReferenceCounted(false);
+                    wake.acquire(30 * 60 * 1000L);
+                }
+            } catch (Exception ignored) {
+            }
+            final Context app = getApplicationContext();
+            new Handler(Looper.getMainLooper()).post(new Runnable() {
+                @Override
+                public void run() {
+                    begin(app, label);
+                }
+            });
+            return START_NOT_STICKY;
+        }
+
+        private void begin(Context app, String label) {
+            JSONObject cfg = BgStore.cfg(app);
+            JSONArray all = cfg.optJSONArray("accounts");
+            JSONArray todo = new JSONArray();
+            if (all != null) {
+                for (int i = 0; i < all.length(); i++) {
+                    JSONObject a = all.optJSONObject(i);
+                    if (a != null && !a.optBoolean("limit", false)) todo.put(a);   // akun Limit tidak dibuka, cukup menunggu jam reset
+                }
+            }
+            next(app, label, todo, 0, new JSONArray());
+        }
+
+        private void next(final Context app, final String label, final JSONArray todo, final int i, final JSONArray out) {
+            if (i >= todo.length()) {
+                finish(app, label, out, "");
+                return;
+            }
+            final JSONObject a = todo.optJSONObject(i);
+            GeckoActivity.runCheck(app, a.optString("id"), a.optString("url", "https://claude.ai/new"), 58000, new CheckCallback() {
+                @Override
+                public void done(JSObject res) {
+                    String err = res.optString("error", "");
+                    if (!err.isEmpty()) {
+                        finish(app, label, out, err);
+                        return;
+                    }
+                    try {
+                        JSONObject it = new JSONObject();
+                        it.put("id", a.optString("id"));
+                        it.put("state", res.optString("state", "unknown"));
+                        it.put("text", res.optString("text", ""));
+                        it.put("url", res.optString("url", ""));
+                        it.put("diag", res.optString("diag", ""));
+                        it.put("view", res.optString("view", ""));
+                        it.put("at", System.currentTimeMillis());
+                        out.put(it);
+                    } catch (Exception ignored) {
+                    }
+                    next(app, label, todo, i + 1, out);
+                }
+            });
+        }
+
+        private void finish(Context app, String label, JSONArray out, String err) {
+            try {
+                long now = System.currentTimeMillis();
+                JSONObject cfg = BgStore.cfg(app);
+                JSONArray accts = cfg.optJSONArray("accounts");
+                int limit = 0;
+                int free = 0;
+                int other = 0;
+                for (int i = 0; i < out.length(); i++) {
+                    JSONObject it = out.optJSONObject(i);
+                    if (it == null) continue;
+                    String st = it.optString("state", "unknown");
+                    boolean isLimit = "limit".equals(st);
+                    boolean isFree = "idle".equals(st) || "resume".equals(st) || "reset".equals(st) || "busy".equals(st);
+                    if (isLimit) limit++;
+                    else if (isFree) free++;
+                    else other++;
+                    if ((isLimit || isFree) && accts != null) {
+                        for (int k = 0; k < accts.length(); k++) {
+                            JSONObject a = accts.optJSONObject(k);
+                            if (a != null && a.optString("id").equals(it.optString("id"))) a.put("limit", isLimit);
+                        }
+                    }
+                }
+                if (!"Uji".equals(label) && err.isEmpty()) {
+                    if ("Selesai jam tenang".equals(label)) cfg.put("quietEndDay", BgScheduler.dayKey(now));
+                    else if ("Sebelum jam tenang".equals(label)) cfg.put("quietPreDay", BgScheduler.dayKey(now));
+                    cfg.put("lastAuto", now);
+                }
+                BgStore.putCfg(app, cfg);
+                if (out.length() > 0 || !err.isEmpty()) {
+                    JSONObject run = new JSONObject();
+                    run.put("at", now);
+                    run.put("label", label);
+                    run.put("err", err);
+                    run.put("items", out);
+                    BgStore.addRun(app, run);
+                }
+                if (out.length() > 0) notifyDone(app, label, limit, free, other);
+            } catch (Exception ignored) {
+            }
+            try {
+                BgScheduler.schedule(app);
+            } catch (Exception ignored) {
+            }
+            try {
+                if (wake != null && wake.isHeld()) wake.release();
+            } catch (Exception ignored) {
+            }
+            sBusy = false;
+            try {
+                stopForeground(true);
+            } catch (Exception ignored) {
+            }
+            stopSelf();
+        }
+
+        private void notifyDone(Context app, String label, int limit, int free, int other) {
+            try {
+                final String ch = "bgresult";
+                NotificationManager nm = (NotificationManager) app.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm == null) return;
+                if (Build.VERSION.SDK_INT >= 26) nm.createNotificationChannel(new NotificationChannel(ch, "Hasil cek terjadwal", NotificationManager.IMPORTANCE_LOW));
+                Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(app, ch) : new Notification.Builder(app);
+                StringBuilder sb = new StringBuilder();
+                if (limit > 0) sb.append(limit).append(" Limit");
+                if (free > 0) sb.append(sb.length() > 0 ? ", " : "").append(free).append(" Free");
+                if (other > 0) sb.append(sb.length() > 0 ? ", " : "").append(other).append(" tidak terbaca");
+                b.setContentTitle("Cek akun: " + label)
+                        .setContentText(sb.toString())
+                        .setSmallIcon(android.R.drawable.stat_notify_sync)
+                        .setAutoCancel(true);
+                Intent li = app.getPackageManager().getLaunchIntentForPackage(app.getPackageName());
+                if (li != null) {
+                    int fl = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
+                    b.setContentIntent(PendingIntent.getActivity(app, 7203, li, fl));
+                }
+                nm.notify(7103, b.build());
+            } catch (Exception ignored) {
+            }
+        }
+
+        @Override
+        public void onDestroy() {
+            try {
+                if (wake != null && wake.isHeld()) wake.release();
+            } catch (Exception ignored) {
+            }
+            super.onDestroy();
+        }
+    }
+
     // Layar browser (mesin Firefox). Tiap akun = contextId sendiri = cookie/login terpisah.
     public static class GeckoActivity extends Activity {
         private static final String EXT_URI = "resource://android/assets/public/limitwatch/";
@@ -353,19 +854,51 @@ public class MainActivity extends BridgeActivity {
         private static volatile boolean sSettled = false;
         private static volatile long sSettledAt = 0;
 
-        private static void attachHidden(GeckoSession s) {
+        private static GeckoView sOverlayView = null;
+        private static WindowManager sOverlayWm = null;
+        static volatile String sViewKind = "none";   // tempat sesi tersembunyi dipasang: activity, overlay, none
+
+        // Pasang sesi di GeckoView yang tidak terlihat. Aplikasi terbuka: di bawah layar aplikasi. Aplikasi tertutup atau di belakang:
+        // jendela overlay hampir transparan (butuh izin "Tampil di atas aplikasi lain").
+        private static void attachHidden(GeckoSession s, Context ctx) {
+            sViewKind = "none";
             try {
                 Activity act = sHost == null ? null : sHost.get();
-                if (act == null || act.isFinishing() || !sHostVisible) return;
-                ViewGroup content = act.findViewById(android.R.id.content);
-                if (content == null) return;
-                GeckoView v = new GeckoView(act);
-                v.setSession(s);
-                content.addView(v, 0, new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                sHiddenView = v;
+                if (act != null && !act.isFinishing() && sHostVisible) {
+                    ViewGroup content = act.findViewById(android.R.id.content);
+                    if (content != null) {
+                        GeckoView v = new GeckoView(act);
+                        v.setSession(s);
+                        content.addView(v, 0, new FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                        sHiddenView = v;
+                        sViewKind = "activity";
+                        return;
+                    }
+                }
             } catch (Exception e) {
                 sHiddenView = null;
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(ctx)) return;
+                WindowManager wm = (WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE);
+                if (wm == null) return;
+                GeckoView v = new GeckoView(ctx);
+                v.setSession(s);
+                WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                        Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT);
+                lp.alpha = 0.01f;
+                wm.addView(v, lp);
+                sOverlayView = v;
+                sOverlayWm = wm;
+                sViewKind = "overlay";
+            } catch (Exception e) {
+                sOverlayView = null;
+                sOverlayWm = null;
             }
         }
 
@@ -373,10 +906,22 @@ public class MainActivity extends BridgeActivity {
             try {
                 GeckoView v = sHiddenView;
                 sHiddenView = null;
-                if (v == null) return;
-                v.releaseSession();
-                ViewGroup p = (ViewGroup) v.getParent();
-                if (p != null) p.removeView(v);
+                if (v != null) {
+                    v.releaseSession();
+                    ViewGroup p = (ViewGroup) v.getParent();
+                    if (p != null) p.removeView(v);
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                GeckoView ov = sOverlayView;
+                WindowManager wm = sOverlayWm;
+                sOverlayView = null;
+                sOverlayWm = null;
+                if (ov != null) {
+                    ov.releaseSession();
+                    if (wm != null) wm.removeView(ov);
+                }
             } catch (Exception ignored) {
             }
         }
@@ -644,9 +1189,11 @@ public class MainActivity extends BridgeActivity {
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
-                    setupSession(s, h, true);   // muat, refresh, baru baca
+                    // Tanpa refresh paksa di awal: halaman dibaca apa adanya. Kalau 25 detik belum ada hasil, halaman di-refresh sekali (lihat di bawah).
+                    setupSession(s, h, false);
+                    final boolean[] reloaded = {false};
                     s.open(sRuntime);
-                    attachHidden(s);
+                    attachHidden(s, ctx);
                     s.setActive(true);
                     withExtension(new Runnable() {
                         @Override
@@ -669,6 +1216,16 @@ public class MainActivity extends BridgeActivity {
                                 st = sCheckState;
                                 at = sCheckStateAt;
                             }
+                            // 25 detik belum ada status apa pun (chat belum termuat): refresh halaman sekali, lalu tunggu lagi sampai batas waktu
+                            if (!reloaded[0] && st.isEmpty() && now - start >= 25000) {
+                                reloaded[0] = true;
+                                resetCheck();
+                                sSettled = false;
+                                try {
+                                    s.reload(GeckoSession.LOAD_FLAGS_NONE);
+                                } catch (Exception ignored) {
+                                }
+                            }
                             // Status positif (limit, Continue, busy, belum login) langsung pasti. Idle baru pasti kalau halaman sudah
                             // selesai dimuat dan tidak ada banner / tombol baru selama 9 detik (banner bisa muncul belakangan).
                             boolean conclusive = !st.isEmpty() && (!"idle".equals(st)
@@ -681,6 +1238,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("url", sCheckUrl);
                                 }
                                 r.put("diag", buildDiag());
+                                r.put("view", sViewKind);
                                 detachHidden();
                                 try {
                                     s.close();
@@ -729,7 +1287,7 @@ public class MainActivity extends BridgeActivity {
                     // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
                     setupSession(s, h, !"send".equals(mode));
                     s.open(sRuntime);
-                    attachHidden(s);
+                    attachHidden(s, ctx);
                     s.setActive(true);
                     withExtension(new Runnable() {
                         @Override
@@ -758,6 +1316,7 @@ public class MainActivity extends BridgeActivity {
                                     r.put("deleted", sBaitDeleted);
                                 }
                                 r.put("diag", buildDiag());
+                                r.put("view", sViewKind);
                                 detachHidden();
                                 try {
                                     s.close();
