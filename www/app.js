@@ -28,11 +28,13 @@ const CHECK_TIMEOUT = 58000;     // ms: batas waktu cek satu akun di belakang la
 const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
+let cancelReq = false;           // tombol Cek ditahan 1 detik: batalkan pengecekan yang sedang berjalan
 let resumeBusy = false;          // sedang membuka browser untuk auto-continue (satu akun pada satu waktu)
 let checkBtn = null;             // tombol "Cek semua akun"
 let checkingId = null;           // akun yang sedang dicek di belakang layar
 let autoSel = null;              // pilihan interval cek otomatis
 let autoHint = null;             // teks jadwal cek otomatis
+let firstGuide = null;           // petunjuk mengambang sebelum cek pertama
 let autoHoldUntil = 0;           // ms: jeda sebelum cek otomatis dicoba lagi (mis. browser sedang terbuka)
 // Pilihan interval cek otomatis (menit). 0 = mati.
 const AUTO_OPTS = [[0, 'Mati'], [30, '30 menit'], [60, '1 jam'], [120, '2 jam'], [300, '5 jam']];
@@ -330,6 +332,7 @@ const CHECK_LABEL = {
 };
 
 function abortReason(code) {
+  if (code === 'cancel') return 'dibatalkan';
   return code === 'browser' ? 'gagal: browser aplikasi sedang terbuka' : 'gagal: pengecekan lain masih berjalan';
 }
 
@@ -1013,7 +1016,8 @@ function closeHistory() {
 function initTools() {
   const s = document.getElementById('summary');
   if (!s) return;
-  checkBtn = el('button', { type: 'button', class: 'tbtn primary', text: '⟳ Cek akun', title: 'Cek semua akun', onclick: checkAll });
+  checkBtn = el('button', { type: 'button', class: 'tbtn primary hold', text: '⟳ Cek akun', title: 'Ketuk: cek semua akun. Tahan 1 detik: batalkan pengecekan yang sedang berjalan', 'aria-label': 'Cek semua akun. Tahan 1 detik untuk membatalkan pengecekan' });
+  holdPress(checkBtn, 1000, cancelChecks, () => { if (checking) toast('Tahan tombol ini 1 detik untuk membatalkan pengecekan.'); else checkAll(); });
   autoSel = el('select', { class: 'tsel', 'aria-label': 'Cek otomatis', onchange: onAutoChange });
   for (const [m, label] of AUTO_OPTS) {
     autoSel.append(el('option', { value: String(m), text: m ? `⏱ ${label}` : '⏱ Mati' }));
@@ -1029,6 +1033,27 @@ function initTools() {
   const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn, quietBtn);
   s.after(tools);
   tools.after(autoHint);
+  // Petunjuk cek pertama: teks tanpa latar + panah ke tombol Cek akun. Hilang selamanya setelah cek pertama selesai.
+  if (!settings.firstDone) {
+    const hl = (t) => el('b', { class: 'fg-hl', text: t });
+    firstGuide = el('div', { class: 'firstguide', 'aria-live': 'polite' },
+      el('div', { class: 'fg-arrow', 'aria-hidden': 'true', text: '↑' }),
+      el('div', { class: 'fg-text' },
+        'Sambungkan ', hl('semua akun'), ' dulu di ', hl('web Claude'),
+        ' (ketuk akun, lalu login). Setelah itu baru ketuk ', hl('Cek akun'),
+        ' untuk ', hl('pengecekan pertama'), '.'));
+    tools.after(firstGuide);
+  }
+  updateAutoHint();
+}
+
+// Tandai cek pertama sudah selesai: petunjuk hilang dan jadwal otomatis boleh jalan.
+function markFirstDone() {
+  if (settings.firstDone) return;
+  settings.firstDone = true;
+  saveSettings();
+  if (firstGuide) { firstGuide.remove(); firstGuide = null; }
+  syncBg(true);
   updateAutoHint();
 }
 
@@ -1201,7 +1226,7 @@ function applyCheck(a, res) {
 function setCheckBtn(text) {
   if (!checkBtn) return;
   checkBtn.textContent = text || '⟳ Cek akun';
-  checkBtn.disabled = !!text;
+  checkBtn.classList.toggle('running', !!text);   // tetap bisa ditahan untuk membatalkan
   if (baitRunBtn) baitRunBtn.classList.toggle('busy', !!text);
 }
 
@@ -1222,6 +1247,7 @@ async function runChecks(list, opts = {}) {
   if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
   if (!list.length) { if (!opts.auto) toast('Belum ada akun.'); return false; }
   checking = true;
+  cancelReq = false;
   updateAutoHint();
   const tally = {};
   let aborted = '';
@@ -1233,6 +1259,7 @@ async function runChecks(list, opts = {}) {
   try {
     for (let i = 0; i < list.length; i++) {
       const a = list[i];
+      if (cancelReq) { aborted = 'cancel'; break; }
       if (!accounts.includes(a)) continue;
       if (!opts.silent) {
         checkingId = a.id;
@@ -1254,6 +1281,7 @@ async function runChecks(list, opts = {}) {
     }
   } finally {
     checking = false;
+    cancelReq = false;
     checkingId = null;
     setCheckBtn(null);
     refreshChecking();
@@ -1270,9 +1298,11 @@ async function runChecks(list, opts = {}) {
         : `${who} · ${sum || 'tidak ada hasil'}`, startedAt, { fails });
   }
   if (aborted) {
-    if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
+    if (aborted === 'cancel') toast('Pengecekan dibatalkan.');
+    else if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
     return false;
   }
+  markFirstDone();
   if (!opts.auto || !document.hidden) {
     const head = opts.label ? 'Status diperbarui. ' : opts.auto ? 'Cek otomatis selesai. ' : 'Cek selesai. ';
     toast(list.length === 1
@@ -1283,6 +1313,13 @@ async function runChecks(list, opts = {}) {
 }
 
 function baitDue() { return settings.baitOn && settings.lastBait > 0 && Date.now() - settings.lastBait >= BAIT_INTERVAL; }
+function cancelChecks() {
+  if (!checking) return;
+  cancelReq = true;
+  setCheckBtn('Membatalkan...');
+  const G = P.GeckoBrowser;
+  try { if (G && G.cancelCheck) G.cancelCheck().catch(() => {}); } catch (_) { /* tidak apa-apa */ }
+}
 function checkAll() { return runChecks(accounts.slice()); }
 // Tombol 🎣: jalankan pancingan + pengecekan sekarang (tidak menunggu 3 jam, tetap jalan walau pancingan OFF)
 function baitNow() { return runBaitCycle(accounts.slice()); }
@@ -1305,7 +1342,7 @@ let keepAliveOn = null;
 function syncKeepAlive() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.keepAlive) return;
-  const want = !!(settings.autoMin || settings.quietOn);
+  const want = !!(settings.firstDone && (settings.autoMin || settings.quietOn));
   if (want === keepAliveOn) return;
   keepAliveOn = want;
   try { G.keepAlive({ on: want }).catch(() => { keepAliveOn = null; }); } catch { keepAliveOn = null; }
@@ -1316,7 +1353,9 @@ function updateAutoHint() {
   if (!autoHint) return;
   let t;
   if (checking) {
-    t = 'Sedang mengecek akun di belakang layar...';
+    t = 'Sedang mengecek akun di belakang layar... Tahan tombol Cek 1 detik untuk membatalkan.';
+  } else if (!settings.firstDone) {
+    t = 'Cek otomatis aktif setelah cek pertama selesai.';
   } else if (!settings.autoMin) {
     t = 'Cek otomatis mati. Pakai tombol ⟳ di tiap akun atau "Cek semua akun".';
   } else if (inQuiet()) {
@@ -1341,7 +1380,7 @@ function syncBg(now = false) {
   clearTimeout(bgSyncTimer);
   const push = () => {
     const payload = {
-      on: !!(settings.autoMin || settings.quietOn),
+      on: !!(settings.firstDone && (settings.autoMin || settings.quietOn)),
       autoMin: settings.autoMin,
       quietOn: settings.quietOn,
       quietStart: settings.quietStart,
@@ -1462,7 +1501,7 @@ function openQuietEditor() {
   );
 }
 
-// Pemicu cek terjadwal selain interval: pertama kali dipakai, sebelum jam tenang, sesudah jam tenang.
+// Pemicu cek terjadwal selain interval: sebelum jam tenang, sesudah jam tenang. Semua baru aktif setelah cek pertama manual.
 // Dipanggil tiap detik. Hanya jalan kalau aplikasi hidup di jam itu (tidak mengejar jadwal yang terlewat saat aplikasi tertutup).
 async function runScheduledTriggers() {
   if (!native || checking || resumeBusy || !accounts.length) return;
@@ -1478,12 +1517,8 @@ async function runScheduledTriggers() {
     updateAutoHint();
   };
 
-  // 1. Pertama kali dipakai: cek semua akun
-  if (!settings.firstDone) {
-    autoHoldUntil = nowMs + 60000;
-    finish(await runChecks(accounts.slice(), { auto: true, label: 'Pertama kali dipakai' }), () => { settings.firstDone = true; });
-    return;
-  }
+  // Sebelum cek pertama (manual), tidak ada cek otomatis apa pun: pengguna perlu waktu menyambungkan semua akun
+  if (!settings.firstDone) return;
   if (!settings.quietOn) return;
   const s0 = toMin(settings.quietStart);
   const e0 = toMin(settings.quietEnd);
@@ -1511,6 +1546,7 @@ async function runScheduledTriggers() {
 
 // Cek berkala (30 menit, 1 jam, 2 jam, 5 jam). Tidak jalan saat jam tenang. Hanya akun yang belum Limit.
 function maybeAutoCheck() {
+  if (!settings.firstDone) return;   // cek otomatis baru aktif sesudah cek pertama manual
   if (!native || !settings.autoMin || checking || resumeBusy || !accounts.length) return;
   if (inQuiet()) return;
   const now = Date.now();
@@ -1591,6 +1627,7 @@ async function runBaitCycle(list, opts = {}) {
   if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
   if (!list.length) return false;
   checking = true;
+  cancelReq = false;
   updateAutoHint();
   baitMemory = new Map();
   const tally = {};
@@ -1608,6 +1645,7 @@ async function runBaitCycle(list, opts = {}) {
     // Tahap 1: pancingan semua akun
     for (let i = 0; i < list.length && !aborted; i++) {
       const a = list[i];
+      if (cancelReq) { aborted = 'cancel'; abortedAt = 'bait'; break; }
       if (!accounts.includes(a)) continue;
       checkingId = a.id;
       setCheckBtn(`Pancing ${i + 1}/${list.length}...`);
@@ -1628,6 +1666,7 @@ async function runBaitCycle(list, opts = {}) {
     // Tahap 2 dan 3: per akun, bandingkan lalu hapus chat pancingan, lalu cek chat utama
     for (let i = 0; i < list.length && !aborted; i++) {
       const a = list[i];
+      if (cancelReq) { aborted = 'cancel'; abortedAt = 'check'; break; }
       if (!accounts.includes(a)) continue;
       const mem = baitMemory.get(a.id);
       checkingId = a.id;
@@ -1672,6 +1711,7 @@ async function runBaitCycle(list, opts = {}) {
     }
   } finally {
     checking = false;
+    cancelReq = false;
     checkingId = null;
     setCheckBtn(null);
     refreshChecking();
@@ -1697,12 +1737,14 @@ async function runBaitCycle(list, opts = {}) {
     }
   }
   if (aborted) {
-    if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
+    if (aborted === 'cancel') toast('Pengecekan dibatalkan.');
+    else if (!opts.auto) toast(aborted === 'browser' ? 'Tutup browser aplikasi dulu, lalu cek lagi.' : 'Pengecekan lain masih berjalan.');
     return false;
   }
   // Sesi pancingan selesai (walau hasilnya gagal): hitungan 3 jam untuk pancingan otomatis berikutnya dimulai
   settings.lastBait = Date.now();
   saveSettings();
+  markFirstDone();
   if (!opts.auto || !document.hidden) {
     toast('Pancingan + cek selesai. ' + Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ') + '.', 6500);
   }
