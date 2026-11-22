@@ -230,6 +230,13 @@ public class MainActivity extends BridgeActivity {
                     });
         }
 
+        // Batalkan pengecekan / pancingan yang sedang berjalan (sesi tersembunyi ditutup di putaran polling berikutnya)
+        @PluginMethod
+        public void cancelCheck(final PluginCall call) {
+            GeckoActivity.sCancel = true;
+            call.resolve();
+        }
+
         // Pancingan satu akun di sesi tersembunyi.
         // mode "send"  : buka chat baru, kirim ".", hentikan respon secepatnya, laporkan limit / free
         // mode "verify": buka chat pancingan (url), baca status limit di dalamnya, lalu hapus chat itu
@@ -825,6 +832,7 @@ public class MainActivity extends BridgeActivity {
         // Pengecekan latar belakang: selama sCheckAccountId tidak null, laporan halaman dicatat di sini
         private static volatile String sCheckAccountId = null;
         private static boolean sCheckRunning = false;
+        static volatile boolean sCancel = false;   // diset tombol tahan-batal di aplikasi; dibaca loop pengecekan
         private static String sCheckState = "";
         private static String sCheckText = "";
         private static String sCheckUrl = "";
@@ -885,13 +893,21 @@ public class MainActivity extends BridgeActivity {
                 if (wm == null) return;
                 GeckoView v = new GeckoView(ctx);
                 v.setSession(s);
+                // Ukuran layar penuh supaya halaman dirender normal, tetapi digeser keluar layar: hanya 2 px yang tersisa di tepi kanan.
+                // Tidak menutupi aplikasi lain dan tidak menangkap sentuhan.
+                android.util.DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+                int w = Math.max(dm.widthPixels, 360);
+                int h = Math.max(dm.heightPixels, 640);
                 WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                        w, h,
                         Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                         PixelFormat.TRANSLUCENT);
+                lp.gravity = Gravity.TOP | Gravity.START;
+                lp.x = w - 2;
                 lp.alpha = 0.01f;
+                lp.y = 0;
                 wm.addView(v, lp);
                 sOverlayView = v;
                 sOverlayWm = wm;
@@ -1179,6 +1195,7 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     sCheckRunning = true;
+                    sCancel = false;
                     resetCheck();
                     resetDiag();
                     sBaitMode = "";   // pengecekan biasa
@@ -1230,6 +1247,21 @@ public class MainActivity extends BridgeActivity {
                             // selesai dimuat dan tidak ada banner / tombol baru selama 9 detik (banner bisa muncul belakangan).
                             boolean conclusive = !st.isEmpty() && (!"idle".equals(st)
                                     || (sSettled && now - Math.max(at, sSettledAt) >= 9000));
+                            if (sCancel) {
+                                sCancel = false;
+                                JSObject r = new JSObject();
+                                r.put("state", "unknown");
+                                r.put("error", "cancel");
+                                detachHidden();
+                                try {
+                                    s.close();
+                                } catch (Exception ignored) {
+                                }
+                                sCheckAccountId = null;
+                                sCheckRunning = false;
+                                cb.done(r);
+                                return;
+                            }
                             if (conclusive || expired) {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
@@ -1272,6 +1304,7 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     sCheckRunning = true;
+                    sCancel = false;
                     resetCheck();
                     resetBait();
                     resetDiag();
@@ -1306,6 +1339,23 @@ public class MainActivity extends BridgeActivity {
                             boolean done;
                             synchronized (GeckoActivity.class) {
                                 done = sBaitDone;
+                            }
+                            if (sCancel) {
+                                sCancel = false;
+                                JSObject r = new JSObject();
+                                r.put("state", "fail");
+                                r.put("error", "cancel");
+                                detachHidden();
+                                try {
+                                    s.close();
+                                } catch (Exception ignored) {
+                                }
+                                sBaitMode = "";
+                                sBaitCmd = "";
+                                sCheckAccountId = null;
+                                sCheckRunning = false;
+                                cb.done(r);
+                                return;
                             }
                             if (done || expired) {
                                 JSObject r = new JSObject();
