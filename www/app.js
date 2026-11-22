@@ -24,7 +24,7 @@ const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat be
 const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
 const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
-const CHECK_TIMEOUT = 40000;     // ms: batas waktu cek satu akun di belakang layar (dihitung sesudah halaman di-refresh; muat awal + refresh menambah sekitar 5-15 detik)
+const CHECK_TIMEOUT = 58000;     // ms: batas waktu cek satu akun di belakang layar. Cek berhenti begitu hasil jelas. Kalau 25 detik belum ada hasil, halaman di-refresh sekali dan ditunggu sampai batas ini (sekitar 25 + 30 detik)
 const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
@@ -36,7 +36,10 @@ let autoHint = null;             // teks jadwal cek otomatis
 let autoHoldUntil = 0;           // ms: jeda sebelum cek otomatis dicoba lagi (mis. browser sedang terbuka)
 // Pilihan interval cek otomatis (menit). 0 = mati.
 const AUTO_OPTS = [[0, 'Mati'], [30, '30 menit'], [60, '1 jam'], [120, '2 jam'], [300, '5 jam']];
-const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // lastAuto = patokan jadwal cek otomatis berikutnya
+// lastAuto = patokan jadwal cek otomatis berikutnya.
+// quietOn/quietStart/quietEnd = jam tenang (tidak ada cek otomatis berkala). quietEndDay / quietPreDay = tanggal cek jam tenang terakhir (sekali per hari).
+// firstDone = cek pertama kali pakai sudah dijalankan.
+const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0, quietOn: true, quietStart: '01:00', quietEnd: '05:00', quietEndDay: '', quietPreDay: '', firstDone: false };
 
 // ---------- Fitur pancingan ----------
 // Tiap akun: chat baru -> kirim "." -> respon Claude dihentikan secepatnya -> catat limit / free di memori sementara.
@@ -44,6 +47,7 @@ const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0 };   // l
 const BAIT_INTERVAL = 3 * 3600 * 1000;
 const BAIT_TIMEOUT = 85000;      // ms: batas waktu satu langkah pancingan per akun (muat halaman + tunggu balasan Claude)
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
+let quietBtn = null;              // tombol 🌙 jam tenang
 let baitRunBtn = null;           // tombol 🎣: ketuk = ON / OFF pancingan, tahan 1 detik = pancing sekarang
 
 // ---------- Continue di latar belakang dan pantau "selesai berpikir" ----------
@@ -96,6 +100,13 @@ async function loadSettings() {
       if (typeof st.lastAuto === 'number') settings.lastAuto = st.lastAuto;
       if (typeof st.baitOn === 'boolean') settings.baitOn = st.baitOn;
       if (typeof st.lastBait === 'number') settings.lastBait = st.lastBait;
+      if (typeof st.quietOn === 'boolean') settings.quietOn = st.quietOn;
+      if (/^\d{2}:\d{2}$/.test(st.quietStart || '')) settings.quietStart = st.quietStart;
+      if (/^\d{2}:\d{2}$/.test(st.quietEnd || '')) settings.quietEnd = st.quietEnd;
+      if (typeof st.quietEndDay === 'string') settings.quietEndDay = st.quietEndDay;
+      if (typeof st.quietPreDay === 'string') settings.quietPreDay = st.quietPreDay;
+      // Pengguna lama (pengaturan sudah tersimpan sebelum fitur ini) tidak dianggap pemakaian pertama
+      settings.firstDone = typeof st.firstDone === 'boolean' ? st.firstDone : true;
     }
   } catch {}
   // Pemakaian pertama: hitungan jadwal mulai dari sekarang
@@ -1008,11 +1019,12 @@ function initTools() {
   autoSel.value = String(settings.autoMin);
   // 🎣 = pancing sekarang: harus DITAHAN 1 detik (anti kepencet). ON / OFF = sekali pencet.
   // 🎣 satu tombol: ketuk sekali = pancingan ON / OFF (tepi hijau / merah), tahan 1 detik = pancing sekarang
-  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq hold baitsw', text: '🎣', title: 'Ketuk: pancingan ON / OFF. Tahan 1 detik: pancing sekarang, lalu cek semua akun', 'aria-label': 'Pancingan: ketuk untuk ON atau OFF, tahan 1 detik untuk memancing sekarang' });
-  holdPress(baitRunBtn, 1000, () => { if (checking) toast('Sedang mengecek akun, tunggu sebentar.'); else baitNow(); }, toggleBait);
+  baitRunBtn = el('button', { type: 'button', class: 'tbtn sq hold baitsw', text: '🎣', title: 'Tahan 1 detik: pancing sekarang, lalu cek semua akun', 'aria-label': 'Tahan 1 detik untuk memancing sekarang' });
+  holdPress(baitRunBtn, 1000, () => { if (checking) toast('Sedang mengecek akun, tunggu sebentar.'); else baitNow(); }, () => toast('Pancingan hanya manual. Tahan tombol 🎣 selama 1 detik.'));
   updateBaitBtn();
   autoHint = el('div', { class: 'hint2 autohint' });
-  const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn);
+  quietBtn = el('button', { type: 'button', class: 'tbtn sq', text: '🌙', title: 'Jam tenang', 'aria-label': 'Atur jam tenang', onclick: openQuietEditor });
+  const tools = el('div', { class: 'tools' }, checkBtn, autoSel, baitRunBtn, quietBtn);
   s.after(tools);
   tools.after(autoHint);
   updateAutoHint();
@@ -1291,7 +1303,7 @@ let keepAliveOn = null;
 function syncKeepAlive() {
   const G = P.GeckoBrowser;
   if (!native || !G || !G.keepAlive) return;
-  const want = !!(settings.autoMin || settings.baitOn);
+  const want = !!(settings.autoMin || settings.quietOn);
   if (want === keepAliveOn) return;
   keepAliveOn = want;
   try { G.keepAlive({ on: want }).catch(() => { keepAliveOn = null; }); } catch { keepAliveOn = null; }
@@ -1301,28 +1313,119 @@ function updateAutoHint() {
   syncKeepAlive();
   if (!autoHint) return;
   let t;
-  if (!settings.autoMin) {
-    t = 'Cek otomatis mati. Pakai tombol ⟳ di tiap akun atau "Cek semua akun".';
-  } else if (checking) {
+  if (checking) {
     t = 'Sedang mengecek akun di belakang layar...';
+  } else if (!settings.autoMin) {
+    t = 'Cek otomatis mati. Pakai tombol ⟳ di tiap akun atau "Cek semua akun".';
+  } else if (inQuiet()) {
+    t = `Jam tenang sampai ${settings.quietEnd}. Tidak ada cek otomatis berkala.`;
   } else {
     const next = Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now());
     const hm = new Date(next).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     t = `Cek otomatis berikutnya sekitar ${hm}.`;
-    if (settings.baitOn && settings.lastBait) {
-      const at = settings.lastBait + BAIT_INTERVAL;
-      const hm2 = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      t += at <= Math.max(settings.lastAuto + settings.autoMin * 60000, Date.now())
-        ? ' Didahului pancingan.'
-        : ` Pancingan berikutnya sekitar ${hm2}.`;
-    }
   }
+  if (settings.quietOn && !checking && !inQuiet()) t += ` Jam tenang ${settings.quietStart}-${settings.quietEnd}.`;
   if (autoHint.textContent !== t) autoHint.textContent = t;
 }
 
-// Dipanggil tiap detik dan saat aplikasi dibuka lagi. Kalau jadwal terlewat (aplikasi tertutup), langsung dijalankan.
+// ---------- Jam tenang ----------
+const toMin = (hhmm) => { const [h, m] = String(hhmm).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const nowMin = (d = new Date()) => d.getHours() * 60 + d.getMinutes();
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function inQuiet(d = new Date()) {
+  if (!settings.quietOn) return false;
+  const s0 = toMin(settings.quietStart);
+  const e0 = toMin(settings.quietEnd);
+  const n = nowMin(d);
+  if (s0 === e0) return false;
+  return s0 < e0 ? (n >= s0 && n < e0) : (n >= s0 || n < e0);
+}
+// Akun yang tidak sedang Limit. Hanya akun ini yang dicek berkala (akun Limit cukup menunggu jam reset-nya).
+const checkable = () => accounts.filter((a) => a.status !== 'working');
+
+function openQuietEditor() {
+  const on = el('input', { type: 'checkbox' });
+  on.checked = settings.quietOn;
+  const st = el('input', { type: 'time' });
+  st.value = settings.quietStart;
+  const en = el('input', { type: 'time' });
+  en.value = settings.quietEnd;
+  const save = () => {
+    if (!st.value || !en.value) { toast('Isi jam mulai dan jam selesai dulu.'); return; }
+    settings.quietOn = on.checked;
+    settings.quietStart = st.value;
+    settings.quietEnd = en.value;
+    settings.quietEndDay = '';
+    settings.quietPreDay = '';
+    saveSettings();
+    updateAutoHint();
+    closeModal();
+    toast(settings.quietOn ? `Jam tenang ${settings.quietStart}-${settings.quietEnd}.` : 'Jam tenang dimatikan.');
+  };
+  openModal(closeModal,
+    el('div', { class: 'mtitle', text: 'Jam tenang' }),
+    el('div', { class: 'hint2', text: 'Selama jam tenang tidak ada cek otomatis berkala. Beberapa menit sebelum jam tenang, semua akun yang belum Limit dicek sekali. Begitu jam tenang selesai, akun yang belum Limit dicek lagi. Akun Limit tidak dibuka halamannya, cukup menunggu jam reset.' }),
+    el('label', { class: 'hint2' }, on, ' Aktifkan jam tenang'),
+    el('div', { class: 'hint2', text: 'Mulai' }), st,
+    el('div', { class: 'hint2', text: 'Selesai' }), en,
+    el('div', { class: 'mact' },
+      el('button', { type: 'button', class: 'btn-g', text: 'Batal', onclick: closeModal }),
+      el('button', { type: 'button', class: 'btn sm', text: 'Simpan', onclick: save }),
+    ),
+  );
+}
+
+// Pemicu cek terjadwal selain interval: pertama kali dipakai, sebelum jam tenang, sesudah jam tenang.
+// Dipanggil tiap detik. Hanya jalan kalau aplikasi hidup di jam itu (tidak mengejar jadwal yang terlewat saat aplikasi tertutup).
+async function runScheduledTriggers() {
+  if (!native || checking || resumeBusy || !accounts.length) return;
+  const nowMs = Date.now();
+  if (nowMs < autoHoldUntil) return;
+  const now = new Date(nowMs);
+  const today = dayKey(now);
+  const finish = (ok, setKey) => {
+    if (!ok) return;
+    setKey();
+    settings.lastAuto = Date.now();
+    saveSettings();
+    updateAutoHint();
+  };
+
+  // 1. Pertama kali dipakai: cek semua akun
+  if (!settings.firstDone) {
+    autoHoldUntil = nowMs + 60000;
+    finish(await runChecks(accounts.slice(), { auto: true, label: 'Pertama kali dipakai' }), () => { settings.firstDone = true; });
+    return;
+  }
+  if (!settings.quietOn) return;
+  const s0 = toMin(settings.quietStart);
+  const e0 = toMin(settings.quietEnd);
+  if (s0 === e0) return;
+  const n = nowMin(now);
+
+  // 2. Jam tenang baru selesai (sampai 20 menit sesudahnya): cek akun yang belum Limit
+  if ((n - e0 + 1440) % 1440 < 20 && settings.quietEndDay !== today) {
+    autoHoldUntil = nowMs + 60000;
+    const list = checkable();
+    if (!list.length) { settings.quietEndDay = today; saveSettings(); return; }
+    finish(await runChecks(list, { auto: true, label: 'Selesai jam tenang' }), () => { settings.quietEndDay = today; });
+    return;
+  }
+
+  // 3. 5 menit sebelum jam tenang mulai: cek akun yang belum Limit
+  const untilStart = (s0 - n + 1440) % 1440;
+  if (untilStart > 0 && untilStart <= 5 && settings.quietPreDay !== today) {
+    autoHoldUntil = nowMs + 60000;
+    const list = checkable();
+    if (!list.length) { settings.quietPreDay = today; saveSettings(); return; }
+    finish(await runChecks(list, { auto: true, label: 'Sebelum jam tenang' }), () => { settings.quietPreDay = today; });
+  }
+}
+
+// Cek berkala (30 menit, 1 jam, 2 jam, 5 jam). Tidak jalan saat jam tenang. Hanya akun yang belum Limit.
 function maybeAutoCheck() {
   if (!native || !settings.autoMin || checking || resumeBusy || !accounts.length) return;
+  if (inQuiet()) return;
   const now = Date.now();
   if (now < settings.lastAuto + settings.autoMin * 60000 || now < autoHoldUntil) return;
   autoCheck();
@@ -1330,11 +1433,8 @@ function maybeAutoCheck() {
 
 async function autoCheck() {
   autoHoldUntil = Date.now() + 60000;   // kalau ditunda (browser terbuka), coba lagi semenit kemudian
-  // Cek otomatis yang jalan sesudah 3 jam sejak pancingan terakhir didahului pancingan. Lalu hitungan 3 jam mulai dari nol.
-  const useBait = baitDue();
-  const ok = useBait
-    ? await runBaitCycle(accounts.slice(), { auto: true })
-    : await runChecks(accounts.slice(), { auto: true });
+  const list = checkable();
+  const ok = list.length ? await runChecks(list, { auto: true }) : true;
   if (ok) {
     settings.lastAuto = Date.now();
     saveSettings();
@@ -1345,9 +1445,8 @@ async function autoCheck() {
 // ---------- Pancingan ----------
 function updateBaitBtn() {
   if (!baitRunBtn) return;
-  baitRunBtn.classList.toggle('on', settings.baitOn);
-  baitRunBtn.classList.toggle('off', !settings.baitOn);
-  baitRunBtn.setAttribute('aria-pressed', settings.baitOn ? 'true' : 'false');
+  // Pancingan tidak lagi jalan otomatis, jadi tidak ada penanda ON / OFF
+  baitRunBtn.classList.remove('on', 'off');
 }
 
 function toggleBait() {
@@ -1878,6 +1977,7 @@ function tick() {
     if (root) live(root, a);
   }
   checkDue();
+  runScheduledTriggers();
   maybeAutoCheck();
   watchBusy();
   updateAutoHint();
