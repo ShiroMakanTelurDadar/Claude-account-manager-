@@ -54,7 +54,6 @@ html[data-theme="oracle"] .cropzoom,
 html[data-theme="oracle"] .achk input { accent-color: #ef4444; }
 html[data-theme="oracle"] .acc {
   border-color: rgba(251, 191, 36, .42);
-  -webkit-backdrop-filter: blur(1px) saturate(.55); backdrop-filter: blur(1px) saturate(.55);
 }
 html[data-theme="oracle"] .acc.waiting { border-color: rgba(253, 224, 71, .6); }
 
@@ -92,7 +91,4 @@ html[data-theme="default"] .himg.isdefault img { object-position: 6% center; }
 /* bubble akun semi transparan seperti tema Oracle: gambar di belakang kelihatan jelas */
 html[data-theme="default"] {
   --acc-bg: linear-gradient(135deg, rgba(4, 7, 12, .50) 0%, rgba(7, 21, 36, .36) 28%, rgba(14, 90, 130, .26) 64%, rgba(125, 211, 252, .20) 100%);
-}
-html[data-theme="default"] .acc {
-  -webkit-backdrop-filter: blur(1px) saturate(.55); backdrop-filter: blur(1px) saturate(.55);
 }
