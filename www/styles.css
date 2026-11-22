@@ -1,614 +1,351 @@
-:root {
-  /* Tema Default (biru langit + hitam). Tema lain menimpa variabel ini lewat theme.css */
-  --bg: #04070c;
-  --bg-top: #071524;
-  --bg-end: #020305;
-  --panel-a: #0b1a2a;
-  --panel-b: #050b12;
-  --ink-rgb: 5, 11, 18;
-  --text: #e6f4ff;
-  --muted: #7f95a8;
-  --line: rgba(125, 211, 252, .16);
-  --sky: #7dd3fc;
-  --sky-lt: #bae6fd;
-  --sky-rgb: 125, 211, 252;
-  --cyan: #22d3ee;
-  --cyan-rgb: 34, 211, 238;
-  --blue: #38bdf8;
-  --blue-rgb: 56, 189, 248;
-  --amber: #fbbf24;
-  --on-grad: #03131c;
-  --grad: linear-gradient(135deg, #bae6fd 0%, #7dd3fc 45%, #22d3ee 100%);
-  --acc-bg: linear-gradient(180deg, rgba(125, 211, 252, .08), rgba(255, 255, 255, .02));
-  --ease: cubic-bezier(.2, .8, .2, 1);
-}
+// Pembaca halaman claude.ai (ekstensi limitwatch). Berjalan di dalam halaman claude.ai milik sesi GeckoView aplikasi.
+// Tugasnya:
+//   1. Melaporkan status halaman ke aplikasi: limit, busy, resume, idle, loggedout (pesan "pageState").
+//   2. Mengisi email di halaman login dan mengirim command Continue (pesan "loginHelp" / "commandDone").
+//   3. Pancingan di sesi tersembunyi: mode "send" (kirim "."), "verify" (baca lalu hapus chat), "continue" (kirim command).
+//      Hasilnya dikirim sebagai "baitResult". Kalau gagal, teksnya berbentuk "why:kode detail".
+// Kata-kata deteksi ada di bagian atas (LIMIT_RE, RESUME_BTN_RE). Ubah di sini kalau tampilan claude.ai berubah.
+(() => {
+  'use strict';
+  if (window.__limitwatch) return;
+  window.__limitwatch = true;
 
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  const LIMIT_RE = /out of (free )?messages|usage limit|limit (will )?reset|kehabisan pesan|batas penggunaan|upgrade to keep chatting|keep chatting with claude pro|free messages return|keep going now with pro|free usage ran out|usage ran out|hit your [^\n]{0,40}limit/i;
+  // Potongan teks yang mungkin bagian dari banner limit (teks banner sering terpecah per elemen, mis. link "messages")
+  const FRAG_RE = /out of|usage|limit|upgrade|chatting|return|ran out|free|kehabisan|batas/i;
+  const RESUME_BTN_RE = /^(continue|try again|retry|lanjutkan|coba lagi)$/i;
+  const CHALLENGE_RE = /just a moment|attention required|verify you are human|checking your browser|performing security verification/i;
+  const SEND_LABEL_RE = /^(send|send message|kirim|kirim pesan)/i;
+  const STOP_LABEL_RE = /^(stop|stop response|stop generating|berhenti|hentikan)/i;
+  // Teks status yang berdiri sendiri saat Claude bekerja ("Working on it", "Run a command"). "Ran 5 commands" (sudah selesai) sengaja tidak cocok.
+  const BUSY_TEXT_RE = /^(working on it|thinking|run(ning)? (a |\d+ )?commands?|sedang bekerja|sedang berpikir|menjalankan perintah)\s*(\.{2,}|…)?$/i;
 
-body {
-  margin: 0;
-  padding: calc(18px + env(safe-area-inset-top)) 12px calc(48px + env(safe-area-inset-bottom));
-  background: var(--bg);
-  color: var(--text);
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  min-height: 100vh;
-}
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const send = async (m) => {
+    try { return await browser.runtime.sendMessage(m); } catch (_) { return null; }
+  };
+  // Sesi tersembunyi tidak punya layar, jadi ukuran elemen bisa 0. Jangan pakai ukuran: cukup cek tidak di-hide lewat CSS.
+  const vis = (e) => {
+    if (!e || !e.isConnected) return false;
+    try {
+      if (typeof e.checkVisibility === 'function') return e.checkVisibility({ visibilityProperty: true });
+      const cs = getComputedStyle(e);
+      return cs.display !== 'none' && cs.visibility !== 'hidden';
+    } catch (_) { return true; }
+  };
+  const txt = (e) => ((e && (e.innerText || e.textContent)) || '').replace(/\s+/g, ' ').trim();
+  const labelOf = (b) => (b.getAttribute('aria-label') || txt(b) || '').trim();
 
-/* ---- Latar gradasi biru langit -> hitam ---- */
-.bg {
-  position: fixed; inset: 0; z-index: -1; overflow: hidden;
-  background:
-    radial-gradient(620px 380px at 12% -6%, rgba(var(--blue-rgb), .30), transparent 65%),
-    radial-gradient(520px 360px at 100% 6%, rgba(var(--cyan-rgb), .16), transparent 60%),
-    linear-gradient(180deg, var(--bg-top) 0%, var(--bg) 55%, var(--bg-end) 100%);
-}
-.bg::before {
-  content: ""; position: absolute; width: 420px; height: 420px; left: -120px; top: 30%;
-  background: radial-gradient(circle, rgba(var(--sky-rgb), .12), transparent 65%);
-  animation: drift 18s ease-in-out infinite alternate;
-}
-@keyframes drift { to { transform: translate(220px, 140px) scale(1.2); } }
+  function click(e) {
+    try {
+      e.focus && e.focus();
+      for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        e.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+      }
+    } catch (_) { try { e.click(); } catch (__) { /* abaikan */ } }
+  }
 
-/* ---- Header ---- */
-header { margin: 0 4px 14px; display: flex; flex-direction: column; gap: 8px; }
-h1 {
-  margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.02em;
-  background: linear-gradient(100deg, var(--sky-lt) 0%, var(--sky) 40%, var(--cyan) 70%, var(--sky-lt) 100%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: shine 7s linear infinite;
-}
-@keyframes shine { to { background-position: -220% 0; } }
+  // ---------- Elemen halaman ----------
+  function composer() {
+    const sel = 'div.ProseMirror[contenteditable="true"], div[contenteditable="true"][role="textbox"], div[contenteditable="true"], textarea';
+    for (const e of document.querySelectorAll(sel)) {
+      if (!vis(e) || e.closest('[role="dialog"]')) continue;
+      return e;
+    }
+    return null;
+  }
+  const composerText = (c) => (c ? (c.value !== undefined ? c.value : c.innerText || c.textContent || '') : '').replace(/​/g, '').trim();
 
-#summary { display: flex; gap: 6px; flex-wrap: wrap; }
-.pill {
-  font-size: 12px; padding: 4px 10px; border-radius: 999px;
-  color: var(--muted); border: 1px solid var(--line); background: rgba(var(--sky-rgb), .05);
-}
-.pill.free { color: var(--sky); }
-.pill.work { color: var(--amber); border-color: rgba(251, 191, 36, .25); background: rgba(251, 191, 36, .06); }
+  function buttons() { return [...document.querySelectorAll('button, [role="button"]')].filter(vis); }
+  const sendBtn = () => buttons().find((b) => SEND_LABEL_RE.test(labelOf(b)) && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+  const stopBtn = () => buttons().find((b) => STOP_LABEL_RE.test(labelOf(b)));
+  const resumeBtn = () => buttons().find((b) => RESUME_BTN_RE.test(txt(b)));
 
-/* ---- Form dasar ---- */
-input, textarea, button { font: inherit; color: var(--text); }
-input, textarea {
-  width: 100%; min-width: 0; font-size: 16px;
-  background: rgba(0, 0, 0, .38); border: 1px solid var(--line); border-radius: 12px;
-  padding: 10px 12px; transition: border-color .2s, box-shadow .2s;
-}
-input:focus, textarea:focus {
-  outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(var(--cyan-rgb), .18);
-}
-textarea { resize: vertical; }
-button { cursor: pointer; border: 0; background: none; }
+  const isChallenge = () => CHALLENGE_RE.test((document.title || '') + ' ' + ((document.body && document.body.innerText) || '').slice(0, 700));
 
-.btn {
-  background: var(--grad); color: var(--on-grad); font-weight: 700; border-radius: 12px; padding: 10px 16px;
-  box-shadow: 0 8px 22px -8px rgba(var(--cyan-rgb), .65), inset 0 1px 0 rgba(255, 255, 255, .55);
-  transition: transform .15s var(--ease), filter .2s;
-}
-.btn:active { transform: scale(.95); filter: brightness(.95); }
-.btn.sm { padding: 9px 14px; font-size: 14px; flex-shrink: 0; }
+  function isLoggedOut() {
+    if (composer()) return false;
+    if (/^\/(login|logout|signup|onboarding)/.test(location.pathname)) return true;
+    if ([...document.querySelectorAll('input[type="email"]')].some(vis)) return true;
+    return buttons().some((b) => /^continue with (google|email|apple|sso)/i.test(txt(b)));
+  }
 
-#addForm { display: flex; gap: 8px; margin: 0 0 14px; }
-#addForm input { flex: 1; }
+  // Banner / popup limit. Cocokkan teks gabungan elemen (bukan per node teks), karena banner terpecah:
+  // "You are out of free " + <a>messages</a> + " until 5:20 AM". Teks di dalam pesan chat diabaikan.
+  const CHAT_SEL = '[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [class*="font-user-message"], [data-is-streaming]';
+  const HAS_TIME = /\d{1,2}[:.]\d{2}/;
+  function limitText() {
+    if (!document.body) return '';
+    if (!LIMIT_RE.test(document.body.textContent || '')) return '';
+    const found = [];
+    const seen = new Set();
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const v = n.nodeValue;
+      if (!v || v.length > 300 || !FRAG_RE.test(v)) continue;
+      let e = n.parentElement;
+      if (!e || !vis(e)) continue;
+      for (let i = 0; i < 5 && e; i++, e = e.parentElement) {
+        const t = txt(e);
+        if (t.length > 300) break;
+        if (!LIMIT_RE.test(t)) continue;
+        if (seen.has(e)) break;
+        seen.add(e);
+        if (!e.closest(CHAT_SEL)) found.push(t);
+        break;
+      }
+    }
+    if (!found.length) return '';
+    // utamakan teks yang memuat jam reset (banner dan popup bisa muncul bersamaan)
+    return (found.find((t) => HAS_TIME.test(t)) || found[0]).slice(0, 300);
+  }
 
-/* ---- Daftar & kartu ---- */
-#list { display: flex; flex-direction: column; gap: 10px; }
+  function hasBusyText() {
+    if (!document.body) return false;
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const v = (n.nodeValue || '').trim();
+      if (v.length > 0 && v.length < 30 && BUSY_TEXT_RE.test(v) && vis(n.parentElement)) return true;
+    }
+    return false;
+  }
 
-.acc {
-  position: relative; overflow: hidden;
-  background: var(--acc-bg);
-  border: 1px solid var(--line); border-radius: 18px;
-  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  box-shadow: 0 10px 30px -18px rgba(0, 0, 0, .9);
-  transition: border-color .35s, box-shadow .35s;
-}
-.acc.waiting { border-color: rgba(251, 191, 36, .28); }
-.acc.ready { border-color: rgba(var(--cyan-rgb), .6); animation: glow 2.6s ease-in-out infinite; }
-@keyframes glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--cyan-rgb), 0), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-  50% { box-shadow: 0 0 26px -4px rgba(var(--cyan-rgb), .45), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-}
+  const hasMessages = () => !!document.querySelector('[data-testid="user-message"], [class*="font-claude-message"], [class*="font-claude-response"], [data-test-render-count]');
 
-.acc.enter { animation: rise .55s var(--ease) both; animation-delay: calc(var(--i, 0) * 70ms); }
-@keyframes rise { from { opacity: 0; transform: translateY(16px) scale(.98); } to { opacity: 1; transform: none; } }
-.acc.leaving { animation: fall .25s ease forwards; pointer-events: none; }
-@keyframes fall { to { opacity: 0; transform: translateX(30px) scale(.97); } }
+  function readState() {
+    const lt = limitText();
+    // Tombol Continue / Try again terlihat dan teks limit tanpa jam reset (mis. "Paused when your free usage ran out"): sudah bisa dilanjutkan
+    if (lt && !(HAS_TIME.test(lt) || !resumeBtn())) return { state: 'resume', text: '' };
+    if (lt) return { state: 'limit', text: lt };
+    if (isLoggedOut()) return { state: 'loggedout', text: '' };
+    if (stopBtn() || hasBusyText()) return { state: 'busy', text: '' };
+    if (resumeBtn()) return { state: 'resume', text: '' };
+    // Di chat yang sudah ada, "free" baru pasti kalau pesan chat sudah tampil dan tidak ada tanda limit. Kolom chat saja belum cukup.
+    if (composer()) return (/^\/chat\//.test(location.pathname) && !hasMessages()) ? { state: 'unknown', text: '' } : { state: 'idle', text: '' };
+    return { state: 'unknown', text: '' };
+  }
 
-/* Baris 1: status | akun | waktu reset | status proyek */
-.r1 { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: stretch; }
-.col { padding: 12px 10px; display: flex; flex-direction: column; justify-content: center; }
-.col + .col {
-  border-left: 1px solid transparent;
-  border-image: linear-gradient(180deg, transparent, rgba(var(--sky-rgb), .38), transparent) 1;
-}
+  // ---------- Mengisi dan mengirim ----------
+  function setValue(el, value) {
+    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
+    el.focus();
+    try {
+      const sel = window.getSelection();
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(r);
+      if (!document.execCommand('insertText', false, value)) throw new Error('execCommand');
+    } catch (_) {
+      el.textContent = value;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+    }
+  }
 
-.stat { align-items: center; gap: 5px; min-width: 62px; cursor: pointer; }
-.stlabel { font-size: 10px; font-weight: 700; letter-spacing: .04em; transition: color .3s; }
-.is-free .stlabel { color: var(--sky); }
-.is-working .stlabel { color: var(--amber); }
+  async function waitFor(fn, ms, step = 200) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const v = fn();
+      if (v) return v;
+      if (Date.now() > end) return null;
+      await sleep(step);
+    }
+  }
 
-.sw { position: relative; width: 36px; height: 20px; display: block; }
-.sw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; z-index: 2; cursor: pointer; padding: 0; }
-.sw i {
-  position: absolute; inset: 0; border-radius: 20px;
-  background: linear-gradient(135deg, var(--sky), var(--cyan));
-  box-shadow: 0 0 12px -2px rgba(var(--cyan-rgb), .6);
-  transition: background .35s, box-shadow .35s;
-}
-.sw i::before {
-  content: ""; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px;
-  background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0, 0, 0, .4);
-  transition: transform .35s cubic-bezier(.3, 1.5, .5, 1);
-}
-.sw input:checked + i {
-  background: linear-gradient(135deg, #fde68a, #f59e0b);
-  box-shadow: 0 0 12px -2px rgba(245, 158, 11, .6);
-}
-.sw input:checked + i::before { transform: translateX(16px); }
+  // Isi kolom chat lalu kirim. Hasil: kode kegagalan ('' = terkirim).
+  async function typeAndSend(text) {
+    const c = await waitFor(composer, 25000);
+    if (!c) return 'no-composer';
+    c.focus();
+    setValue(c, text);
+    await sleep(400);
+    if (!composerText(composer()).includes(text.trim().slice(0, 20))) {
+      setValue(c, text);   // coba sekali lagi
+      await sleep(400);
+      if (!composerText(composer()).includes(text.trim().slice(0, 20))) return 'text-not-inserted';
+    }
+    const pressEnter = () => {
+      c.focus();
+      for (const t of ['keydown', 'keypress', 'keyup']) {
+        c.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      }
+    };
+    const submitted = () => stopBtn() || !composerText(composer());
+    const b = await waitFor(sendBtn, 3000, 150);
+    if (b) click(b); else pressEnter();
+    if (await waitFor(submitted, 3500, 150)) return '';
+    // Belum terkirim: coba cara satunya (tombol kirim <-> Enter), sekali
+    const b2 = sendBtn();
+    if (b) pressEnter(); else if (b2) click(b2); else pressEnter();
+    const sent = await waitFor(() => submitted() || (hasMessages() && !composerText(composer())), 6000, 150);
+    return sent ? '' : 'not-submitted';
+  }
 
-.acct { cursor: pointer; }
-.acctT {
-  font-size: 14px; font-weight: 650; line-height: 1.25; color: var(--text);
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; overflow-wrap: anywhere;
-}
-.acct:active .acctT { color: var(--sky); }
+  const where = () => `url=${location.pathname} judul=${(document.title || '').slice(0, 40)}`;
 
-.k { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
-.v { font-size: 15px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.rst { min-width: 62px; cursor: pointer; }
-.is-working .rst .v { color: var(--amber); }
-.is-free .rst .v { color: var(--text); }
-.prj { min-width: 62px; }
-.prj .v { font-size: 13px; transition: color .3s; }
-.prj .v.idle { color: var(--muted); }
-.prj .v.paused { color: var(--amber); }
-.prj .v.ready { color: var(--cyan); text-shadow: 0 0 12px rgba(var(--cyan-rgb), .6); }
-.prj .v.running { color: #86efac; text-shadow: 0 0 12px rgba(134, 239, 172, .5); }
+  // ---------- Pancingan ----------
+  async function stopResponse() {
+    for (let i = 0; i < 6; i++) {
+      const b = stopBtn();
+      if (b) { click(b); await sleep(300); }
+      if (!stopBtn()) return;
+    }
+  }
 
-/* Baris 2: continue + keterangan */
-.r2 {
-  display: flex; align-items: center; gap: 10px; padding: 9px 10px 10px;
-  border-top: 1px solid var(--line);
-}
-.go {
-  position: relative; overflow: hidden; flex-shrink: 0;
-  display: inline-flex; align-items: center; gap: 6px;
-  background: var(--grad); color: var(--on-grad); font-weight: 750; font-size: 14px;
-  border-radius: 12px; padding: 9px 14px;
-  box-shadow: 0 8px 22px -8px rgba(var(--cyan-rgb), .7), inset 0 1px 0 rgba(255, 255, 255, .55);
-  transition: transform .15s var(--ease), opacity .4s, filter .4s, box-shadow .4s;
-}
-.go .arr { transition: transform .25s var(--ease); }
-.go:active:not(:disabled) { transform: scale(.94); }
-.go:hover:not(:disabled) .arr { transform: translateX(3px); }
-.go:disabled { opacity: .3; filter: saturate(.25) grayscale(.45); box-shadow: none; cursor: not-allowed; }
-.acc.ready .go::after {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, .65) 50%, transparent 70%);
-  transform: translateX(-120%); animation: sweep 2.4s ease-in-out infinite;
-}
-@keyframes sweep { 55%, 100% { transform: translateX(120%); } }
+  async function waitOutcome(ms) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const lt = limitText();
+      if (lt) { await stopResponse(); return { outcome: 'limit', text: lt }; }
+      if (isLoggedOut()) return { outcome: 'loggedout', text: '' };
+      if (stopBtn() || document.querySelector('[class*="font-claude-message"], [class*="font-claude-response"]')) {
+        await stopResponse();
+        await sleep(700);
+        const again = limitText();   // limit kadang muncul sesaat setelah respon mulai
+        return again ? { outcome: 'limit', text: again } : { outcome: 'free', text: '' };
+      }
+      await sleep(200);
+    }
+    return null;
+  }
 
-.note {
-  flex: 1; min-width: 0; font-size: 12px; color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.acc.ready .note { color: var(--sky); }
-.acc.waiting .note { color: var(--amber); }
-.acc.busy .note { color: #86efac; }
-.acc.busy { border-color: rgba(134, 239, 172, .35); }
+  async function deleteChat() {
+    const triggers = [...document.querySelectorAll('button[aria-haspopup="menu"], button[aria-label*="options" i], button[aria-label*="menu" i], [data-testid*="chat-menu" i]')].filter(vis);
+    for (const t of triggers) {
+      click(t);
+      await sleep(500);
+      const item = [...document.querySelectorAll('[role="menuitem"], [role="option"], [role="menu"] button')].find((e) => /^(delete|hapus)/i.test(txt(e)));
+      if (!item) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(200); continue; }
+      click(item);
+      await sleep(600);
+      const ok = [...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((e) => /^(delete|hapus)/i.test(txt(e)));
+      if (ok) { click(ok); await sleep(1500); return true; }
+    }
+    return false;
+  }
 
-.chev { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; flex-shrink: 0; transition: background .2s; }
-.chev:active { background: rgba(var(--sky-rgb), .12); }
-.chev::before {
-  content: ""; width: 8px; height: 8px; margin-top: -3px;
-  border-right: 2px solid var(--sky); border-bottom: 2px solid var(--sky);
-  transform: rotate(45deg); transition: transform .35s var(--ease);
-}
-.acc.open .chev::before { transform: rotate(-135deg); margin-top: 3px; }
+  async function runBait(help) {
+    const mode = help.bait;
+    let res = { outcome: 'fail', text: 'why:no-response', deleted: false };
+    try {
+      if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 30000))) {
+        res = { outcome: 'fail', text: 'why:no-composer ' + where() };
+      } else if (isChallenge()) {
+        res = { outcome: 'fail', text: 'why:challenge ' + where() };
+      } else if (isLoggedOut()) {
+        res = { outcome: 'loggedout', text: '' };
+      } else if (mode === 'send' || mode === 'continue') {
+        const cmd = mode === 'send' ? '.' : (help.baitCmd || 'Continue');
+        const err = await typeAndSend(cmd);
+        if (err) res = { outcome: 'fail', text: `why:${err} ${where()}` };
+        else {
+          const r = await waitOutcome(mode === 'send' ? 40000 : 15000);
+          if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
+          else if (mode === 'continue') res = { outcome: r.outcome === 'free' ? 'sent' : r.outcome, text: r.text };
+          else res = r;
+        }
+      } else if (mode === 'verify') {
+        const r = await waitFor(() => limitText() || hasMessages(), 25000, 300);
+        if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
+        else {
+          const lt = limitText();
+          res = lt ? { outcome: 'limit', text: lt } : { outcome: 'free', text: '' };
+          res.deleted = await deleteChat();
+        }
+      }
+    } catch (e) {
+      res = { outcome: 'fail', text: `why:error ${(e && e.message) || e}` };
+    }
+    await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted });
+  }
 
-/* ---- Panel detail (buka-tutup halus) ---- */
-.dwrap { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .38s var(--ease); }
-.acc.open .dwrap { grid-template-rows: 1fr; }
-.dinner { overflow: hidden; min-height: 0; visibility: hidden; transition: visibility 0s .38s; }
-.acc.open .dinner { visibility: visible; transition-delay: 0s; }
-.dpad { padding: 4px 12px 14px; display: flex; flex-direction: column; gap: 12px; border-top: 1px solid var(--line); padding-top: 12px; }
+  // ---------- Isi email dan command ----------
+  async function fillEmail(email) {
+    const end = Date.now() + 25000;
+    while (Date.now() < end) {
+      const i = [...document.querySelectorAll('input[type="email"]')].find(vis);
+      if (i) {
+        if (!i.value) { i.focus(); setValue(i, email); }
+        return;
+      }
+      if (composer()) return;
+      await sleep(800);
+    }
+  }
 
-.drow { display: flex; gap: 8px; }
-.dname { font-weight: 650; }
-.btn-d {
-  flex-shrink: 0; padding: 0 14px; border-radius: 12px; font-size: 14px;
-  color: #fda4af; border: 1px solid rgba(253, 164, 175, .3); background: rgba(253, 164, 175, .06);
-  transition: transform .15s;
-}
-.btn-d:active { transform: scale(.95); }
+  async function sendCommand(text) {
+    const err = await typeAndSend(text);
+    if (!err) await send({ type: 'commandDone' });
+  }
 
-.field { display: flex; flex-direction: column; gap: 7px; }
-.field label { color: var(--muted); font-size: 12px; }
-.is-free .only-working, .is-working .only-free { display: none; }
-/* Project sisa tetap bisa dilihat dan dihapus walau akun sudah Free */
-.is-free.has-pj .only-working.proj { display: flex; }
+  // ---------- Pelaporan status ----------
+  function startReporting() {
+    let last = '';
+    let lastAt = 0;
+    const tick = () => {
+      const s = readState();
+      if (s.state === 'unknown') return;   // halaman belum siap: jangan dilaporkan
+      const key = `${s.state}|${s.text}|${location.pathname}`;
+      const now = Date.now();
+      if (key !== last || (s.state === 'busy' && now - lastAt > 4000)) {
+        last = key;
+        lastAt = now;
+        send({ type: 'pageState', state: s.state, text: s.text, url: location.href });
+      }
+    };
+    setInterval(tick, 1000);
+    tick();
+    // Kalau 15 detik tidak ada status yang dikenal: kirim sonde supaya aplikasi bisa menampilkan apa yang dilihat skrip
+    setTimeout(() => {
+      if (last) return;
+      const n = (q) => document.querySelectorAll(q).length;
+      const sonde = `sonde: composer=${composer() ? 1 : 0} editable=${n('[contenteditable="true"]')} textarea=${n('textarea')} tombol=${n('button')} panjang=${((document.body && document.body.innerText) || '').length} lebar=${window.innerWidth}`;
+      send({ type: 'hello', url: location.href, title: sonde, challenge: isChallenge() });
+    }, 15000);
+  }
 
-.chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.chip {
-  padding: 6px 12px; font-size: 13px; border-radius: 999px;
-  border: 1px solid var(--line); background: rgba(var(--sky-rgb), .06); color: var(--sky);
-  transition: transform .15s, background .2s;
-}
-.chip:active { transform: scale(.93); background: var(--grad); color: var(--on-grad); }
+  // ---------- Tombol Paste email (tombol melayang aplikasi) ----------
+  // Aplikasi menandai permintaan paste; skrip ini menanyakannya tiap 600 ms dan mengisi kolom yang sedang aktif.
+  function pasteTarget() {
+    const a = document.activeElement;
+    if (a && a !== document.body && vis(a) && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable)) return a;
+    return [...document.querySelectorAll('input[type="email"]')].find(vis) || composer();
+  }
+  function startPasteWatcher() {
+    setInterval(async () => {
+      if (document.hidden) return;
+      const r = await send({ type: 'pasteCheck' });
+      if (!r || !r.paste || !r.email) return;
+      const t = pasteTarget();
+      if (t) { t.focus(); setValue(t, r.email); }
+    }, 600);
+  }
 
-.cd { font-size: 17px; font-weight: 800; color: var(--amber); font-variant-numeric: tabular-nums; }
-.cd.done { color: var(--cyan); }
-.hint2 { color: var(--muted); font-size: 12px; }
+  async function main() {
+    // Tanda hidup: aplikasi tahu skrip ini benar-benar jalan di halaman (dipakai untuk penjelasan kalau gagal)
+    send({ type: 'hello', url: location.href, title: document.title || '', challenge: isChallenge() });
 
-.plist { display: flex; flex-wrap: wrap; gap: 6px; }
-.pchip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 11px;
-  border-radius: 999px; font-size: 13px; color: #fde68a;
-  background: rgba(251, 191, 36, .09); border: 1px solid rgba(251, 191, 36, .28);
-  animation: pop .3s var(--ease);
-}
-.pchip button {
-  width: 20px; height: 20px; border-radius: 50%; font-size: 10px; line-height: 20px; color: #fde68a;
-  background: rgba(251, 191, 36, .15);
-}
-@keyframes pop { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
-.padd { display: flex; gap: 8px; }
+    let help = null;
+    for (let i = 0; i < 80; i++) {   // halaman belum di-refresh: native menjawab wait=true
+      help = await send({ type: 'loginHelp' });
+      if (!help || !help.wait) break;
+      await sleep(500);
+    }
+    help = help || {};
+    if (help.bait) { await runBait(help); return; }
+    if (help.email) fillEmail(help.email);
+    startReporting();
+    if (help.command) sendCommand(help.command);
+    startPasteWatcher();
+  }
 
-.hint { color: var(--muted); text-align: center; margin-top: 40px; }
-
-#toast {
-  position: fixed; left: 14px; right: 14px; bottom: calc(20px + env(safe-area-inset-bottom)); z-index: 10;
-  padding: 12px 16px; border-radius: 14px; font-size: 14px; color: var(--text);
-  background: rgba(var(--ink-rgb), .88); border: 1px solid rgba(var(--sky-rgb), .35);
-  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
-  box-shadow: 0 10px 30px -10px rgba(var(--cyan-rgb), .35);
-  opacity: 0; transform: translateY(14px); transition: opacity .3s, transform .3s var(--ease);
-}
-#toast.show { opacity: 1; transform: none; }
-#toast[hidden] { display: none; }
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
-}
-
-/* ---- Tombol Connect ---- */
-.link {
-  width: 32px; height: 32px; border-radius: 10px; font-size: 15px; flex-shrink: 0;
-  background: rgba(var(--sky-rgb), .08); border: 1px solid var(--line);
-  transition: transform .15s, background .2s;
-}
-.link:active { transform: scale(.9); background: rgba(var(--sky-rgb), .2); }
-.connect {
-  width: 100%; padding: 11px 14px; border-radius: 12px; font-size: 14px; font-weight: 650; color: var(--sky);
-  background: rgba(var(--sky-rgb), .07); border: 1px solid rgba(var(--sky-rgb), .35);
-  transition: transform .15s, background .2s;
-}
-.connect:active { transform: scale(.97); background: rgba(var(--sky-rgb), .16); }
-
-/* ---- Link chat & Note ---- */
-.chk { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-.field .chk { color: var(--text); font-size: 14px; }
-.chk input { width: 20px; height: 20px; padding: 0; flex-shrink: 0; accent-color: var(--cyan); }
-
-.r3 { display: none; align-items: flex-end; gap: 8px; padding: 0 0 10px 10px; }
-.acc.notes-on .r3 { display: flex; }
-.nchips { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
-.nchip {
-  display: inline-flex; align-items: center; max-width: 100%;
-  padding: 5px 11px; border-radius: 10px; font-size: 13px; color: var(--text);
-  background: rgba(255, 255, 255, .05);
-  border: 1px solid var(--line); border-left: 4px solid var(--nc, var(--sky));
-  transition: transform .15s, background .2s;
-}
-.nchip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nchip:active { transform: scale(.95); background: rgba(255, 255, 255, .1); }
-.ntag {
-  flex-shrink: 0; margin-left: auto; padding: 7px 14px 7px 24px;
-  font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #fff; background: #ef4444;
-  clip-path: polygon(11px 0, 100% 0, 100% 100%, 11px 100%, 0 50%);
-  transition: transform .15s, filter .2s;
-}
-.ntag:active { transform: scale(.94); filter: brightness(.9); }
-
-.modal {
-  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
-  background: rgba(var(--ink-rgb), .72); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-  animation: fade .2s ease;
-}
-@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-.mbox {
-  width: 100%; max-width: 440px; max-height: 88vh; display: flex; flex-direction: column; gap: 12px;
-  padding: 16px; border-radius: 18px;
-  background: linear-gradient(180deg, var(--panel-a), var(--panel-b)); border: 1px solid rgba(var(--sky-rgb), .3);
-  box-shadow: 0 20px 60px -20px rgba(var(--cyan-rgb), .35);
-}
-.mtitle { font-size: 16px; font-weight: 750; display: flex; align-items: center; gap: 8px; }
-.mdot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-.swatches { display: flex; flex-wrap: wrap; gap: 10px; }
-.swatch { width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; transition: transform .15s, border-color .2s; }
-.swatch.on { border-color: #fff; transform: scale(1.12); }
-.mact { display: flex; gap: 8px; justify-content: flex-end; }
-.mact.between { justify-content: space-between; }
-.mact .btn-d { padding: 9px 14px; }
-.btn-g { padding: 9px 14px; border-radius: 12px; font-size: 14px; color: var(--muted); border: 1px solid var(--line); }
-.nedit { flex: 1; min-height: 42vh; resize: none; line-height: 1.5; }
-
-/* ---- Ekspor / Impor data ---- */
-.tools { display: flex; gap: 8px; flex-wrap: wrap; }
-.tbtn {
-  padding: 6px 12px; font-size: 12px; border-radius: 999px; color: var(--sky);
-  border: 1px solid var(--line); background: rgba(var(--sky-rgb), .05);
-  transition: transform .15s, background .2s;
-}
-.tbtn:active { transform: scale(.95); background: rgba(var(--sky-rgb), .16); }
-#toast { z-index: 30; }
-
-/* Tombol alat: cek akun dan kode Gmail */
-.tbtn:disabled { opacity: .5; }
-.tbtn.ok { color: #86efac; }
-
-/* Pilihan interval cek otomatis dan tombol cek per akun */
-.tsel {
-  width: auto; padding: 6px 28px 6px 12px; font-size: 12px; border-radius: 999px; color: var(--sky);
-  border: 1px solid var(--line); background-color: rgba(var(--sky-rgb), .05);
-  appearance: none; -webkit-appearance: none;
-  background-image: linear-gradient(45deg, transparent 50%, var(--sky) 50%), linear-gradient(135deg, var(--sky) 50%, transparent 50%);
-  background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
-  background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
-}
-.tsel option { background: var(--panel-a); color: var(--text); }
-.autohint { margin: -4px 4px 12px; }
-.link:disabled { opacity: .45; cursor: default; }
-.acc.checking .link { animation: pulse 1s ease-in-out infinite; border-color: var(--cyan); }
-@keyframes pulse { 50% { opacity: .45; } }
-/* Keterangan di samping Continue boleh dua baris karena sekarang ada dua tombol kecil */
-.note { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; }
-
-/* Continue hijau: tombol Continue / Try again terdeteksi di chat Claude */
-.acc.resume { border-color: rgba(74, 222, 128, .65); animation: glowg 2.6s ease-in-out infinite; }
-@keyframes glowg {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-  50% { box-shadow: 0 0 26px -4px rgba(74, 222, 128, .45), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-}
-.acc.resume .go {
-  background: linear-gradient(135deg, #bbf7d0 0%, #4ade80 50%, #22c55e 100%); color: #03140a;
-  box-shadow: 0 8px 22px -8px rgba(34, 197, 94, .75), inset 0 1px 0 rgba(255, 255, 255, .55);
-}
-.acc.resume .go::after {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, .65) 50%, transparent 70%);
-  transform: translateX(-120%); animation: sweep 2.4s ease-in-out infinite;
-}
-.acc.resume .note { color: #86efac; }
-.prj .v.resume { color: #86efac; text-shadow: 0 0 12px rgba(134, 239, 172, .5); }
-
-
-/* Asal waktu reset (otomatis / manual) */
-.srcline { line-height: 1.35; }
-.chip[hidden] { display: none; }
-
-/* ---- Slide riwayat: muncul dari kiri, lebar kurang dari setengah layar ---- */
-.hbackdrop {
-  position: fixed; inset: 0; z-index: 24; background: rgba(var(--ink-rgb), .45);
-  opacity: 0; pointer-events: none; transition: opacity .25s ease;
-}
-.hbackdrop.show { opacity: 1; pointer-events: auto; }
-.hdrawer {
-  position: fixed; top: 0; bottom: 0; left: 0; z-index: 25;
-  width: 46vw; max-width: 360px;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: calc(14px + env(safe-area-inset-top)) 10px calc(14px + env(safe-area-inset-bottom));
-  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
-  border-right: 1px solid rgba(var(--sky-rgb), .3);
-  box-shadow: 10px 0 40px -12px rgba(0, 0, 0, .8);
-  transform: translateX(-105%); visibility: hidden;
-  transition: transform .3s var(--ease), visibility 0s linear .3s;
-}
-.hdrawer.open { transform: none; visibility: visible; transition: transform .3s var(--ease), visibility 0s; }
-.hhead { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.htitle { font-size: 15px; font-weight: 750; }
-.hx { width: 28px; height: 28px; border-radius: 50%; color: var(--muted); border: 1px solid var(--line); font-size: 12px; }
-.hlist { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; -webkit-overflow-scrolling: touch; }
-.hitem {
-  padding: 8px 9px; border-radius: 12px; border: 1px solid var(--line);
-  background: rgba(var(--sky-rgb), .05); border-left: 3px solid #4ade80;
-}
-.hitem.bad { border-left-color: #f87171; }
-.hrow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px; }
-.hkind { font-size: 12px; font-weight: 700; color: var(--text); }
-.hbadge { font-size: 10px; font-weight: 800; letter-spacing: .03em; padding: 2px 7px; border-radius: 999px; color: #86efac; background: rgba(74, 222, 128, .12); }
-.hitem.bad .hbadge { color: #fca5a5; background: rgba(248, 113, 113, .14); }
-.htime { margin-top: 3px; font-size: 11px; color: var(--sky); }
-.hdet { margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); overflow-wrap: anywhere; }
-.hempty { margin: 4px; }
-.hclear { font-size: 12px; padding: 8px 10px; }
-
-/* ---- Akun yang sedang dicek: seluruh tepi kartu menyala dan berputar ---- */
-@property --edge { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
-.acc.checking { border-color: rgba(var(--cyan-rgb), .7); animation: chkglow 1.4s ease-in-out infinite; }
-@keyframes chkglow {
-  0%, 100% { box-shadow: 0 0 10px -2px rgba(var(--cyan-rgb), .35), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-  50% { box-shadow: 0 0 30px -2px rgba(var(--cyan-rgb), .8), 0 10px 30px -18px rgba(0, 0, 0, .9); }
-}
-.acc.checking::after {
-  content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
-  border-radius: inherit; padding: 3px;
-  background: conic-gradient(from var(--edge), transparent 0 50%, rgba(var(--cyan-rgb), .25) 62%, var(--cyan) 82%, #ffffff 92%, transparent 100%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
-  animation: edgespin 1.5s linear infinite;
-}
-@keyframes edgespin { to { --edge: 360deg; } }
-
-/* ================= Perapihan header, tombol atas, NOTE, pemakaian ================= */
-
-/* Header: tombol menu (tiga garis) di kiri atas + judul */
-header { flex-direction: row; align-items: center; gap: 12px; margin: 0 4px 12px; }
-.menubtn {
-  width: 40px; height: 40px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
-  border-radius: 12px; border: 1px solid var(--line); background: rgba(var(--sky-rgb), .06);
-  transition: transform .15s, background .2s;
-}
-.menubtn span { display: block; width: 18px; height: 2px; border-radius: 2px; background: var(--sky); transition: width .2s; }
-.menubtn span:nth-child(2) { width: 13px; }
-.menubtn:active { transform: scale(.94); background: rgba(var(--sky-rgb), .16); }
-
-/* Ringkasan akun: satu panel, bukan bubble terpisah */
-#summary { display: block; margin: 0 4px 10px; }
-.sumbar {
-  display: flex; align-items: center; justify-content: space-around; gap: 4px;
-  padding: 9px 12px; border-radius: 14px; border: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(var(--sky-rgb), .08), rgba(var(--sky-rgb), .03));
-}
-.sumbar i { width: 1px; height: 18px; background: linear-gradient(180deg, transparent, rgba(var(--sky-rgb), .4), transparent); }
-.sg { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); }
-.sg b { font-size: 18px; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
-.sg.free b { color: var(--sky); }
-.sg.work b { color: var(--amber); }
-
-/* Tombol alat: dua baris rapi */
-.tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 0 4px 6px; }
-.tools .tbtn, .tools .tsel { height: 40px; border-radius: 12px; font-size: 13px; display: flex; align-items: center; justify-content: center; }
-.tools .tsel { width: 100%; justify-content: flex-start; }
-.tbtn.primary {
-  font-weight: 700; color: var(--on-grad);
-  background: linear-gradient(135deg, var(--sky), var(--cyan)); border-color: transparent;
-  box-shadow: 0 8px 20px -10px rgba(var(--cyan-rgb), .8);
-}
-.tbtn.primary:active { background: linear-gradient(135deg, var(--sky), var(--cyan)); }
-.tbtn.primary:disabled { opacity: .6; box-shadow: none; }
-.tbtn.sq { width: 44px; padding: 0; font-size: 17px; }
-.autohint { margin: 0 6px 12px; }
-
-/* Kolom kedua baris akun: kapan terakhir dicek */
-.is-free .rst .v.stale { color: var(--muted); }
-.tsel.quick { width: auto; padding: 5px 26px 5px 10px; }
-
-/* NOTE: satu tulisan berwarna di bawah nama akun (penanda sekaligus catatan) */
-.memo {
-  display: block; max-width: 100%; margin-top: 3px; padding: 0; text-align: left;
-  font-size: 11px; font-weight: 700; line-height: 1.2; color: var(--mc, #ef4444);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  text-shadow: 0 0 12px color-mix(in srgb, var(--mc, #ef4444) 55%, transparent);
-  transition: opacity .15s;
-}
-.memo[hidden] { display: none; }
-.memo.empty { font-size: 10px; font-weight: 800; letter-spacing: .14em; }
-.memo:active { opacity: .6; }
-
-/* Wallpaper slide riwayat: memenuhi seluruh tinggi slide (dari dasar sampai atas), di belakang semua isi */
-.hdrawer > *:not(.himg) { position: relative; z-index: 1; }
-.hdrawer { --himg-h: 100%; }
-.himg {
-  position: absolute; left: 0; right: 0; bottom: 0; height: var(--himg-h); z-index: 0;
-  overflow: hidden; pointer-events: none;
-}
-.himg img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: 82% center; }   /* bawaan: helm di sisi kanan gambar */
-/* Lapisan gelap tipis supaya judul, kartu riwayat, dan tombol tetap terbaca di atas gambar */
-.himg::after {
-  content: ""; position: absolute; inset: 0;
-  background: linear-gradient(180deg, rgba(var(--ink-rgb), .62) 0%, rgba(var(--ink-rgb), .22) 38%, rgba(var(--ink-rgb), .18) 70%, rgba(var(--ink-rgb), .5) 100%);
-}
-.hdrawer .htitle { text-shadow: 0 1px 8px rgba(0, 0, 0, .8); }
-/* Daftar riwayat memudar sebelum sampai di tepi atas dan bawahnya */
-.hdrawer .hlist {
-  padding: 22px 0 34px; margin: -10px 0;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 34px), transparent 100%);
-          mask-image: linear-gradient(to bottom, transparent 0, #000 22px, #000 calc(100% - 34px), transparent 100%);
-}
-.hdrawer .hitem { background: rgba(var(--ink-rgb), .58); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
-
-/* Tombol di bawah panel riwayat */
-.hdrawer .hclear { width: 100%; flex-shrink: 0; text-align: center; }
-.hdrawer .hbtns { display: flex; gap: 8px; flex-shrink: 0; }
-.hdrawer .hbtns .hclear { width: auto; flex: 1 1 0; min-width: 0; padding: 8px 4px; white-space: nowrap; }
-/* Tombol di atas wallpaper: latar gelap semi-transparan + blur tipis supaya teks tetap terbaca */
-.hdrawer .hclear { background: rgba(var(--ink-rgb), .62); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
-.hdrawer .hlist { min-height: 0; }
-
-/* ================= Perapat tampilan atas: judul di tengah, tombol alat satu baris ================= */
-body { padding-top: calc(10px + env(safe-area-inset-top)); }
-
-/* Header: menu kiri, judul tengah, Control kanan */
-header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; margin: 0 4px 8px; }
-header .menubtn { justify-self: start; }
-header .ctlbtn { justify-self: end; height: 40px; }
-header h1 { text-align: center; }
-
-/* Ringkasan akun: lebih kecil */
-#summary { margin: 0 4px 6px; }
-.sumbar { padding: 4px 10px; border-radius: 12px; }
-.sumbar i { height: 13px; }
-.sg { font-size: 11px; gap: 5px; }
-.sg b { font-size: 14px; }
-
-/* Cek akun, waktu cek, pancingan: satu baris */
-.tools { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 46px 46px; gap: 6px; margin: 0 4px 4px; }
-.tools .tbtn, .tools .tsel { height: 38px; font-size: 12px; min-width: 0; padding-left: 8px; padding-right: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tools .tsel { padding-right: 22px; background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%; text-overflow: clip; }
-.tools .tbtn.sq { width: 46px; padding: 0; font-size: 17px; }
-
-/* Tombol 🎣: tepi tipis menyala tetap (tidak berkedip). Hijau = ON, merah = OFF */
-.tbtn.baitsw { border-width: 1px; }
-.tbtn.baitsw.on { border-color: rgba(74, 222, 128, .7); }
-.tbtn.baitsw.off { border-color: rgba(248, 113, 113, .7); }
-.tbtn.baitsw.busy { opacity: .5; }
-
-/* Tombol tahan 1 detik: isi terisi pelan selama ditahan */
-.tbtn.hold { position: relative; overflow: hidden; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
-.tbtn.hold::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: rgba(var(--sky-rgb), .38); transform: scaleX(0); transform-origin: left center; transition: transform .15s ease-out;
-}
-.tbtn.hold.holding::after { transform: scaleX(1); transition: transform 1s linear; }
-
-/* Hint, form tambah akun, dan daftar naik */
-.autohint { margin: 0 6px 6px; font-size: 11px; line-height: 1.3; }
-#addForm { margin: 0 0 8px; }
-#addForm input { padding-top: 8px; padding-bottom: 8px; }
-#list { gap: 8px; }
-header h1 { font-size: 18px; white-space: nowrap; }
-header .ctlbtn { height: 38px; padding: 0 10px; gap: 5px; font-size: 12px; }
-header .ctlbtn svg { width: 14px; height: 14px; }
-header .menubtn { width: 38px; height: 38px; }
-/* Judul tepat di tengah layar, tombol menu dan Control di kiri dan kanan */
-header { position: relative; display: flex; justify-content: space-between; min-height: 38px; }
-header h1 { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); font-size: 17px; text-align: center; pointer-events: none; }
-header .ctlbtn { padding: 0 8px; }
-body > header > h1 { font-size: 16px; }
-
-/* ---- Riwayat: item bisa diketuk, detail penyebab gagal ---- */
-.hitem.tap { cursor: pointer; -webkit-user-select: none; user-select: none; }
-.hitem.tap:active { background: rgba(var(--sky-rgb), .12); }
-.hmore { margin-top: 4px; font-size: 10px; color: var(--muted); }
-.hdmodal {
-  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
-  padding: 18px; background: rgba(var(--ink-rgb), .66);
-}
-.hdbox {
-  width: 100%; max-width: 420px; max-height: 82vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
-  padding: 14px; border-radius: 18px; border: 1px solid var(--line);
-  background: linear-gradient(180deg, var(--panel-a), var(--panel-b)); box-shadow: 0 20px 60px -20px rgba(0, 0, 0, .9);
-}
-.hdhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 16px; }
-.hdbody { margin: 8px 0 4px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
-.hdgrp { margin-top: 10px; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: rgba(var(--sky-rgb), .05); }
-.hdlbl { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--sky); margin-top: 6px; }
-.hdlbl:first-child { margin-top: 0; }
-.hdtxt { margin: 2px 0 0; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
-.hdtech {
-  margin: 8px 0 0; padding: 8px; border-radius: 8px; background: rgba(0, 0, 0, .35); color: var(--muted);
-  font: 11px/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
-}
-.hdclose { width: 100%; margin-top: 12px; }
-.hbadge.badx { color: #fca5a5; background: rgba(248, 113, 113, .14); }
-
-/* Gambar beranda buatan pengguna (tidak ikut tema): di atas gradasi, di bawah isi */
-.bg, .bg * { pointer-events: none; }
-.bg .homeimg { position: absolute; inset: 0; z-index: 1; display: none; }
-.bg .homeimg.on { display: block; }
-.bg .homeimg img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.bg .homeimg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.35), rgba(0,0,0,.55)); }
+  main().catch((e) => { send({ type: 'hello', url: location.href, title: 'error: ' + ((e && e.message) || e), challenge: false }); });
+})();
