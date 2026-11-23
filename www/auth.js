@@ -66,7 +66,10 @@
   const themeId = () => (window.Theme && Theme.get()) || 'default';
   const themeKey = (k) => (themeId() === 'default' ? k : k + '@' + themeId());
   const ASSET_SUFFIX = { default: 'petronas', oracle: 'oracle' };
-  const themeAsset = (name) => 'assets/' + name + '-' + (ASSET_SUFFIX[themeId()] || 'petronas') + '.jpg';
+  const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';   // 1 px kosong: tema tanpa gambar
+  const themeAsset = (name) => (window.Theme && Theme.noImages && Theme.noImages())
+    ? BLANK_IMG
+    : 'assets/' + name + '-' + (ASSET_SUFFIX[themeId()] || 'petronas') + '.jpg';
   const media = {
     // Gambar bawaan dan gambar buatan pengguna terikat ke tema yang sedang dipakai
     get DEFAULT_URL() { return themeAsset('login'); },         // gambar bawaan halaman login
