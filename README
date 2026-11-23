@@ -26,6 +26,7 @@ Main features:
 - **Check accounts.** The "Cek semua akun" button checks every account in the background. The ⟳ button on an account checks only that account.
 - **Automatic check.** Choose Off, 30 minutes, 1 hour, 2 hours, or 5 hours. The default is 1 hour.
 - **Browser floating button.** Inside the account browser there is one small floating button (like iPhone AssistiveTouch). Tap it to reveal the Home (back to the app) and Refresh buttons. It can be dragged anywhere, snaps to the left or right edge, and remembers its position. When left alone for a few seconds, its color fades to gray and it becomes slightly transparent; touching it restores the color.
+- **Themes.** Petronas, Oracle, and Lite. Lite uses plain flat colors with no wallpaper, images, or looping animations (lighter on the phone).
 - **Notes.** Optional colored notes for each account.
 - **Backup.** Export all accounts as text and import them back.
 - **Notification.** A system notification is scheduled for the reset time, even when the app is closed.
@@ -134,6 +135,7 @@ Fitur utama:
 - **Cek akun.** Tombol "Cek semua akun" mengecek semua akun di belakang layar. Tombol ⟳ di sebuah akun hanya mengecek akun itu.
 - **Cek otomatis.** Pilih Mati, 30 menit, 1 jam, 2 jam, atau 5 jam. Bawaannya 1 jam.
 - **Tombol melayang di browser.** Di dalam browser akun ada satu tombol melayang kecil (seperti AssistiveTouch iPhone). Ketuk untuk memunculkan tombol Home (kembali ke aplikasi) dan Refresh. Bisa digeser ke mana saja, menempel ke tepi kiri atau kanan, dan posisinya diingat. Kalau beberapa detik tidak disentuh, warnanya memudar jadi abu-abu dan sedikit transparan; disentuh lagi warnanya kembali.
+- **Tema.** Petronas, Oracle, dan Lite. Lite memakai warna polos tanpa wallpaper, gambar, atau animasi berulang (lebih ringan di HP).
 - **Note.** Catatan berwarna per akun (opsional).
 - **Backup.** Ekspor semua akun sebagai teks dan impor kembali.
 - **Notifikasi.** Notifikasi sistem dijadwalkan di jam reset, walau aplikasi tertutup.
