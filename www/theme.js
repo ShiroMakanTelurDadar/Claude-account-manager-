@@ -7,6 +7,8 @@
   const THEMES = [
     { id: 'default', name: 'Petronas', colors: ['#04070c', '#38bdf8', '#bae6fd'], bar: '#04070c' },
     { id: 'oracle', name: 'Oracle', colors: ['#0a0504', '#dc2626', '#fbbf24'], bar: '#0a0504' },
+    // Lite: warna polos, tanpa gambar / wallpaper / animasi (noImages = true)
+    { id: 'lite', name: 'Lite', colors: ['#0f1216', '#5b8def', '#e0b341'], bar: '#0f1216', noImages: true },
   ];
   const byId = (id) => THEMES.find((t) => t.id === id) || THEMES[0];
   const read = () => { try { return localStorage.getItem(KEY) || 'default'; } catch (_) { return 'default'; } };
@@ -22,6 +24,7 @@
   window.Theme = {
     list: THEMES,
     get: () => byId(read()).id,
+    noImages: () => !!byId(read()).noImages,   // true = tema ini tidak memakai gambar sama sekali
     set(id) {
       const t = apply(id);
       try { localStorage.setItem(KEY, t); } catch (_) { /* tema tetap terpasang untuk sesi ini */ }
