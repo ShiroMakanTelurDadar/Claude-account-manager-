@@ -24,7 +24,7 @@ const busyAt = new Map();        // id akun -> waktu terakhir Claude terlihat be
 const limitSeenAt = new Map();   // id akun -> waktu banner limit terakhir terlihat
 const resumeAt = new Map();      // id akun -> waktu auto-continue terakhir
 const resumeWhy = new Map();     // id akun -> sumber pemicu ('page' atau 'check') untuk teks info
-const CHECK_TIMEOUT = 58000;     // ms: batas waktu cek satu akun di belakang layar. Cek berhenti begitu hasil jelas. Kalau 25 detik belum ada hasil, halaman di-refresh sekali dan ditunggu sampai batas ini (sekitar 25 + 30 detik)
+const CHECK_TIMEOUT = 240000;    // ms (4 menit): batas waktu cek satu akun di belakang layar. Cek berhenti begitu hasil jelas. Kalau 25 detik belum ada hasil, halaman di-refresh sekali dan ditunggu sampai batas ini
 const RESUME_TTL = 2 * 3600 * 1000;     // ms: tombol Continue hijau dianggap basi kalau tidak ada laporan baru selama ini
 const CHECK_BUSY_TTL = 10 * 60 * 1000;  // ms: hasil cek "busy" dianggap basi setelah ini
 let checking = false;            // sedang cek semua akun
@@ -44,10 +44,10 @@ const AUTO_OPTS = [[0, 'Mati'], [30, '30 menit'], [60, '1 jam'], [120, '2 jam'],
 const settings = { autoMin: 60, lastAuto: 0, baitOn: true, lastBait: 0, quietOn: true, quietStart: '01:00', quietEnd: '05:00', quietEndDay: '', quietPreDay: '', firstDone: false };
 
 // ---------- Fitur pancingan ----------
-// Tiap akun: chat baru -> kirim "." -> respon Claude dihentikan secepatnya -> catat limit / free di memori sementara.
+// Tiap akun: chat baru -> kirim "Hi" -> begitu ada kalimat balasan Claude, pancingan selesai -> catat limit / free di memori sementara.
 // Sesi pertama = tombol 🎣 (cek otomatis menunggu itu). Sesudahnya tiap BAIT_INTERVAL (3 jam): begitu cek otomatis mau jalan dan sudah 3 jam sejak pancingan terakhir, cek itu didahului pancingan.
 const BAIT_INTERVAL = 3 * 3600 * 1000;
-const BAIT_TIMEOUT = 85000;      // ms: batas waktu satu langkah pancingan per akun (muat halaman + tunggu balasan Claude)
+const BAIT_TIMEOUT = 240000;     // ms (4 menit): batas waktu satu langkah pancingan per akun (muat halaman + tunggu balasan Claude)
 let baitMemory = new Map();      // id akun -> {state, text, chatUrl, at, verified, deleted, mismatch}. Hanya di RAM, dikosongkan begitu pengecekan selesai memakainya.
 let quietBtn = null;              // tombol 🌙 jam tenang
 let baitRunBtn = null;           // tombol 🎣: ketuk = ON / OFF pancingan, tahan 1 detik = pancing sekarang
@@ -850,7 +850,7 @@ function explainFail(f) {
     case 'no-composer':
       return { cause: 'Halaman terbuka tetapi kolom chat tidak ditemukan dalam 30 detik. Biasanya akun belum login, atau halaman yang tampil bukan halaman chat' + (f.extra ? ` (${f.extra})` : '') + '.', fix: 'Pastikan akun sudah login lewat Connect. Kalau sudah login, tampilan claude.ai mungkin berubah: perbarui fungsi composer() di limitwatch/content.js.' };
     case 'text-not-inserted':
-      return { cause: 'Kolom chat ketemu tapi titik (".") tidak berhasil diketik ke dalamnya.', fix: 'Cara mengisi kolom chat di claude.ai mungkin berubah: perbarui setValue() di limitwatch/content.js.' };
+      return { cause: 'Kolom chat ketemu tapi kata "Hi" tidak berhasil diketik ke dalamnya.', fix: 'Cara mengisi kolom chat di claude.ai mungkin berubah: perbarui setValue() di limitwatch/content.js.' };
     case 'not-submitted':
       return { cause: 'Teks sudah masuk kolom chat tetapi pesan tidak terkirim (tombol kirim tidak ditemukan atau tidak bisa ditekan).', fix: 'Perbarui SEND_LABEL_RE / sendBtn() di limitwatch/content.js sesuai tombol kirim claude.ai sekarang.' };
     case 'no-response':
@@ -969,6 +969,7 @@ function initHistory() {
 // Gambar bawah slide riwayat: buatan pengguna (Control > Tampilan > Slide riwayat) atau gambar bawaan
 async function applyHistImg() {
   if (!histImgEl) return;
+  if (window.Theme && Theme.noImages && Theme.noImages()) { histImgEl.firstChild.removeAttribute('src'); return; }   // tema Lite: tanpa gambar
   const img = histImgEl.firstChild;
   let rec = null;
   try { rec = window.Auth && Auth.media ? await Auth.media.get('hist') : null; } catch {}
@@ -984,6 +985,7 @@ async function applyHomeImg() {
  try {
   const bg = document.querySelector('.bg');
   if (!bg) return;
+  if (window.Theme && Theme.noImages && Theme.noImages()) { const old = bg.querySelector('.homeimg'); if (old) old.remove(); return; }   // tema Lite: tanpa gambar
   let box = bg.querySelector('.homeimg');
   if (!box) { box = el('div', { class: 'homeimg', 'aria-hidden': 'true' }, el('img', { alt: '', draggable: 'false' })); bg.append(box); }
   let rec = null;
@@ -1617,9 +1619,10 @@ function applyBait(a, state, text) {
 }
 
 // Satu sesi pancingan untuk semua akun, lalu pengecekan:
-//  1. Pancingan tiap akun (chat baru, kirim ".", Stop). Hasil dicatat di baitMemory.
-//  2. Tiap akun: buka chat pancingan, bandingkan dengan memori, tentukan limit / free, hapus chat pancingan.
+//  1. Pancingan tiap akun (chat baru, kirim "Hi", selesai begitu ada balasan Claude). Hasil dicatat di baitMemory.
+//  2. Tiap akun: buka chat pancingan, bandingkan dengan memori, tentukan limit / free.
 //  3. Kembali ke chat utama (link di banner) dan cek seperti biasa.
+//  4. Setelah cek akun itu selesai: hapus chat pancingan akun tersebut.
 // Mengembalikan true kalau selesai, false kalau tidak jalan atau ditunda.
 async function runBaitCycle(list, opts = {}) {
   const G = P.GeckoBrowser;
@@ -1683,7 +1686,6 @@ async function runBaitCycle(list, opts = {}) {
         if (vr.state === 'fail') noteFail(fails, a, 'Verifikasi', vr);
         if (vr.state === 'limit' || vr.state === 'free') {
           mem.verified = true;
-          mem.deleted = !!vr.deleted;
           mem.mismatch = vr.state !== mem.state;
           verdict = vr.state;                    // isi chat pancingan jadi patokan
           text = vr.text || mem.text;
@@ -1708,6 +1710,17 @@ async function runBaitCycle(list, opts = {}) {
       if (res.state && res.state !== 'unknown') checkKnown++;
       const cl = CHECK_LABEL[res.state] || CHECK_LABEL.unknown;
       checkTally[cl] = (checkTally[cl] || 0) + 1;
+
+      // Pancingan dan pengecekan akun ini selesai: hapus chat pancingannya
+      if (mem && mem.chatUrl) {
+        setCheckBtn(`Hapus chat ${i + 1}/${list.length}...`);
+        let dr;
+        try { dr = await G.bait({ accountId: a.id, url: mem.chatUrl, mode: 'delete', timeoutMs: 150000 }); }
+        catch (e) { dr = { state: 'fail' }; }
+        if (dr.error) { aborted = dr.error; abortedAt = 'check'; break; }
+        mem.deleted = dr.state === 'deleted';
+        if (!mem.deleted) noteFail(fails, a, 'Hapus', dr);
+      }
     }
   } finally {
     checking = false;
