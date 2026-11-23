@@ -115,6 +115,13 @@
       bodyEl.append(h('div', { class: 'csec' }, h('h3', { text: 'Tema' }), row));
     }
 
+    // Tema tanpa gambar (Lite): bagian pengaturan gambar tidak dipakai
+    if (window.Theme && Theme.noImages && Theme.noImages()) {
+      bodyEl.append(h('div', { class: 'csec' }, h('h3', { text: 'Tampilan' }),
+        h('p', { class: 'cnote', text: 'Tema Lite tidak memakai gambar, wallpaper, atau animasi. Pilih tema lain untuk mengatur gambar.' })));
+      return;
+    }
+
     // --- Tampilan login ---
     const rec = await Auth.media.get();
     if (!bodyEl) return;
