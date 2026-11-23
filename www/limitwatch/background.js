@@ -11,7 +11,7 @@ browser.runtime.onMessage.addListener((msg) => {
   }
   if (msg.type === 'loginHelp' || msg.type === 'pasteCheck') {
     // Jawaban native (email akun dan command Continue) dikembalikan ke content script
-    return browser.runtime.sendNativeMessage('browser', msg).catch(() => null);
+    return browser.runtime.sendNativeMessage('browser', msg).catch((e) => ({ error: String((e && e.message) || e) }));
   }
   return undefined;
 });
