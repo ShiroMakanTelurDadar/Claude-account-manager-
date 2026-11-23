@@ -2,7 +2,7 @@
 // Tugasnya:
 //   1. Melaporkan status halaman ke aplikasi: limit, busy, resume, idle, loggedout (pesan "pageState").
 //   2. Mengisi email di halaman login dan mengirim command Continue (pesan "loginHelp" / "commandDone").
-//   3. Pancingan di sesi tersembunyi: mode "send" (kirim "."), "verify" (baca lalu hapus chat), "continue" (kirim command).
+//   3. Pancingan di sesi tersembunyi: mode "send" (kirim "Hi"), "verify" (baca status chat pancingan), "delete" (hapus chat pancingan), "continue" (kirim command).
 //      Hasilnya dikirim sebagai "baitResult". Kalau gagal, teksnya berbentuk "why:kode detail".
 // Kata-kata deteksi ada di bagian atas (LIMIT_RE, RESUME_BTN_RE). Ubah di sini kalau tampilan claude.ai berubah.
 (() => {
@@ -21,8 +21,13 @@
   const BUSY_TEXT_RE = /^(working on it|thinking|run(ning)? (a |\d+ )?commands?|sedang bekerja|sedang berpikir|menjalankan perintah)\s*(\.{2,}|…)?$/i;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let lastSendErr = '';
   const send = async (m) => {
-    try { return await browser.runtime.sendMessage(m); } catch (_) { return null; }
+    try {
+      let r = await browser.runtime.sendMessage(m);
+      if (typeof r === 'string') { try { r = JSON.parse(r); } catch (_) {} }   // aplikasi menjawab berupa teks JSON
+      return r;
+    } catch (e) { lastSendErr = String((e && e.message) || e); return null; }
   };
   // Sesi tersembunyi tidak punya layar, jadi ukuran elemen bisa 0. Jangan pakai ukuran: cukup cek tidak di-hide lewat CSS.
   const vis = (e) => {
@@ -145,7 +150,9 @@
       sel.addRange(r);
       if (!document.execCommand('insertText', false, value)) throw new Error('execCommand');
     } catch (_) {
-      el.textContent = value;
+      const para = document.createElement('p');   // struktur yang dipakai kolom chat (ProseMirror): <p>teks</p>
+      para.textContent = value;
+      el.replaceChildren(para);
       el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
     }
   }
@@ -178,10 +185,11 @@
         c.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
       }
     };
-    const submitted = () => stopBtn() || !composerText(composer());
+    const submitted = () => !!stopBtn() || (composer() ? !composerText(composer()) : hasMessages());   // kolom chat hilang sesaat tanpa pesan = belum terkirim
     const b = await waitFor(sendBtn, 3000, 150);
     if (b) click(b); else pressEnter();
-    if (await waitFor(submitted, 3500, 150)) return '';
+    const sent1 = await waitFor(submitted, 3500, 150);
+    if (sent1) return '';
     // Belum terkirim: coba cara satunya (tombol kirim <-> Enter), sekali
     const b2 = sendBtn();
     if (b) pressEnter(); else if (b2) click(b2); else pressEnter();
@@ -200,12 +208,46 @@
     }
   }
 
-  async function waitOutcome(ms) {
+  // Teks balasan Claude di chat (kosong = belum ada). Dipakai pancingan: begitu ada kalimat balasan, pancingan dianggap selesai.
+  const REPLY_NOISE_RE = /can make mistakes|double-check|dapat membuat kesalahan|periksa kembali/i;
+  function claudeReplyText() {
+    for (const e of document.querySelectorAll('[class*="font-claude-message"], [class*="font-claude-response"], [data-is-streaming]')) {
+      const t = txt(e);
+      if (t) return t;
+    }
+    // Cadangan kalau nama class berubah: teks apa pun yang muncul setelah pesan pengguna terakhir di halaman chat
+    if (!/^\/chat\//.test(location.pathname)) return '';
+    const users = [...document.querySelectorAll('[data-testid="user-message"]')];
+    const last = users[users.length - 1];
+    if (!last) return '';
+    const c = composer();
+    for (const e of document.querySelectorAll('p, li, pre')) {
+      if (last.contains(e) || !(last.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      if ((c && c.contains(e)) || e.closest('nav, aside, header, form, fieldset, [role="dialog"]') || !vis(e)) continue;
+      const t = txt(e);
+      if (t && !REPLY_NOISE_RE.test(t) && !LIMIT_RE.test(t)) return t;
+    }
+    return '';
+  }
+
+  async function waitOutcome(ms, needText) {
     const end = Date.now() + ms;
+    let stopSince = 0;
     while (Date.now() < end) {
       const lt = limitText();
       if (lt) { await stopResponse(); return { outcome: 'limit', text: lt }; }
       if (isLoggedOut()) return { outcome: 'loggedout', text: '' };
+      if (needText) {
+        // Pancingan: selesai begitu ada kalimat balasan. Tombol stop yang menyala 8 detik tanpa teks juga dianggap sudah dibalas.
+        const reply = claudeReplyText();
+        let streaming = false;
+        if (!reply && stopBtn()) { if (!stopSince) stopSince = Date.now(); streaming = Date.now() - stopSince > 8000; } else if (!stopBtn()) stopSince = 0;
+        if (!reply && !streaming) { await sleep(200); continue; }
+        await stopResponse();
+        await sleep(700);
+        const again = limitText();   // limit kadang muncul sesaat setelah balasan mulai
+        return again ? { outcome: 'limit', text: again } : { outcome: 'free', text: '' };
+      }
       if (stopBtn() || document.querySelector('[class*="font-claude-message"], [class*="font-claude-response"]')) {
         await stopResponse();
         await sleep(700);
@@ -217,48 +259,197 @@
     return null;
   }
 
-  async function deleteChat() {
-    const triggers = [...document.querySelectorAll('button[aria-haspopup="menu"], button[aria-label*="options" i], button[aria-label*="menu" i], [data-testid*="chat-menu" i]')].filter(vis);
-    for (const t of triggers) {
-      click(t);
-      await sleep(500);
-      const item = [...document.querySelectorAll('[role="menuitem"], [role="option"], [role="menu"] button')].find((e) => /^(delete|hapus)/i.test(txt(e)));
-      if (!item) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(200); continue; }
-      click(item);
-      await sleep(600);
-      const ok = [...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((e) => /^(delete|hapus)/i.test(txt(e)));
-      if (ok) { click(ok); await sleep(1500); return true; }
+  // Cara 1: API internal claude.ai. Halaman sudah login, jadi cookie ikut terkirim. Cepat dan tidak bergantung pada tampilan.
+  async function deleteChatApi() {
+    const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
+    if (!m) return false;
+    try {
+      const r = await fetch('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
+      if (!r.ok) {
+        return false;
+      }
+      const orgs = await r.json();
+      for (const o of Array.isArray(orgs) ? orgs : []) {
+        if (!o || !o.uuid) continue;
+        const d = await fetch(`/api/organizations/${o.uuid}/chat_conversations/${m[1]}`, { method: 'DELETE', credentials: 'include', headers: { accept: 'application/json' } });
+        if (d.ok) return true;
+      }
+    } catch (e) {
     }
     return false;
+  }
+
+  // Cara 2: lewat sidebar, seperti dilakukan manual di HP: buka sidebar, titik tiga di chat ini, lalu Delete (dan konfirmasi)
+  const DEL_ITEM_RE = /^(delete|hapus)( chat| percakapan)?$/i;
+  function findDeleteItem() {
+    const c = [...document.querySelectorAll('button, [role="menuitem"], [role="option"], [role="button"], a, div, span')].filter((e) => vis(e) && DEL_ITEM_RE.test(txt(e)));
+    const leaf = c.filter((e) => !c.some((o) => o !== e && e.contains(o)));   // elemen paling dalam
+    const e = leaf[leaf.length - 1];   // menu yang baru muncul ada di akhir dokumen
+    return e ? (e.closest('button, [role="menuitem"], [role="option"], [role="button"], a') || e) : null;
+  }
+  function rowMenuButton(id) {
+    const link = document.querySelector(`a[href*="${id}"]`);
+    if (!link) return null;
+    let row = link;
+    for (let i = 0; i < 4 && row; i++, row = row.parentElement) {
+      const bs = [...row.querySelectorAll('button, [role="button"]')];
+      if (!bs.length) continue;
+      return bs.find((b) => b.getAttribute('aria-haspopup') || /more|option|menu|action|opsi|lainnya/i.test(labelOf(b))) || bs[bs.length - 1];
+    }
+    return null;
+  }
+  async function openSidebar() {
+    const cands = buttons().filter((b) => !b.getAttribute('aria-haspopup'));
+    const byLabel = cands.find((b) => /sidebar|navigation|toggle|open menu|buka/i.test(labelOf(b)));
+    const byPos = cands.find((b) => { const r = b.getBoundingClientRect(); return r.left < 100 && r.top < 150 && r.width > 0; });
+    const t = byLabel || byPos;
+    if (t) { click(t); await sleep(900); }
+  }
+  async function deleteChatSidebar(idArg) {
+    const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
+    const id = idArg || (m && m[1]);
+    if (!id) return false;
+    const isCur = location.pathname.includes(id);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 1 || !rowMenuButton(id)) {
+        await openSidebar();
+        await waitFor(() => rowMenuButton(id), 3000, 200);
+      }
+      const dots = rowMenuButton(id);
+      if (!dots) continue;
+      click(dots);
+      await sleep(800);
+      const del = await waitFor(findDeleteItem, 2500, 200);
+      if (!del) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await sleep(300);
+        continue;
+      }
+      click(del);
+      await sleep(900);
+      const ok = [...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((e) => e !== del && vis(e) && /^(delete|hapus)\b/i.test(txt(e)));
+      if (ok) click(ok);
+      const gone = await waitFor(() => !document.querySelector(`a[href*="${id}"]`) || (isCur && !location.pathname.includes(id)), 4000, 300);
+      if (gone || ok) return true;
+    }
+    return false;
+  }
+
+  // Cara 3 (cadangan terakhir): menu di header halaman chat
+  async function deleteChatMenu() {
+    const DEL_RE = /^(delete|hapus)\b/i;
+    const title = (document.title || '').replace(/\s*[-–|]\s*Claude\s*$/i, '').trim();
+    const triggers = [];
+    const add = (e) => { if (e && !triggers.includes(e)) triggers.push(e); };
+    if (title) buttons().filter((b) => txt(b) && (txt(b) === title || title.startsWith(txt(b)))).forEach(add);
+    document.querySelectorAll('[data-testid*="chat-title" i], [data-testid*="chat-menu" i], [data-testid*="conversation" i]').forEach((e) => { if (vis(e)) add(e); });
+    buttons().filter((b) => b.getAttribute('aria-haspopup') === 'menu' || /options|menu|more|opsi|lainnya|actions/i.test(labelOf(b))).forEach(add);
+    const findDelete = () => {
+      const all = [...document.querySelectorAll('[role="menuitem"], [role="option"], [role="menu"] button, [role="menu"] a, [role="menu"] div, [data-radix-popper-content-wrapper] button, [data-radix-popper-content-wrapper] div, [role="dialog"] button')]
+        .filter((e) => vis(e) && txt(e).length < 30 && DEL_RE.test(txt(e)));
+      return all.find((e) => e.getAttribute('role') === 'menuitem') || all[0];
+    };
+    for (const t of triggers.slice(0, 8)) {
+      click(t);
+      await sleep(700);
+      const item = findDelete();
+      if (!item) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await sleep(300); continue; }
+      click(item);
+      await sleep(800);
+      const ok = [...document.querySelectorAll('[role="dialog"] button, [role="alertdialog"] button')].find((e) => vis(e) && DEL_RE.test(txt(e)));
+      if (ok) click(ok);
+      await sleep(1500);
+      if (ok || !/^\/chat\//.test(location.pathname)) return true;
+    }
+    return false;
+  }
+
+  async function deleteChat() {
+    if (await deleteChatApi()) { await sleep(500); return true; }
+    if (await deleteChatSidebar()) return true;
+    return deleteChatMenu();
+  }
+
+  // Hapus SEMUA chat berjudul "Greeting"/"Greetings" di akun ini (chat pancingan lama yang tertinggal ikut terhapus)
+  const GREETING_RE = /^greetings?$/i;
+  async function deleteGreetingsApi() {   // jumlah terhapus, atau -1 kalau API tidak bisa dipakai
+    let n = 0;
+    try {
+      const r = await fetch('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
+      if (!r.ok) return -1;
+      const orgs = await r.json();
+      for (const o of Array.isArray(orgs) ? orgs : []) {
+        if (!o || !o.uuid) continue;
+        const l = await fetch(`/api/organizations/${o.uuid}/chat_conversations`, { credentials: 'include', headers: { accept: 'application/json' } });
+        if (!l.ok) continue;
+        const chats = await l.json();
+        for (const c of (Array.isArray(chats) ? chats : []).filter((x) => x && x.uuid && GREETING_RE.test(String(x.name || '').trim())).slice(0, 40)) {
+          const d = await fetch(`/api/organizations/${o.uuid}/chat_conversations/${c.uuid}`, { method: 'DELETE', credentials: 'include', headers: { accept: 'application/json' } });
+          if (d.ok) n++;
+        }
+      }
+    } catch (e) {
+      return n || -1;
+    }
+    return n;
+  }
+  async function deleteGreetingsUi() {
+    const rows = () => [...document.querySelectorAll('a[href^="/chat/"]')].filter((a) => GREETING_RE.test(txt(a)))
+      .map((a) => (/\/chat\/([0-9a-f-]{36})/i.exec(a.getAttribute('href')) || [])[1]).filter(Boolean);
+    if (!rows().length) { await openSidebar(); await sleep(1200); }
+    let n = 0;
+    for (const id of [...new Set(rows())].slice(0, 10)) {
+      if (await deleteChatSidebar(id)) n++;
+    }
+    return n;
+  }
+  async function deleteGreetings() {
+    let n = await deleteGreetingsApi();
+    if (n < 0) n = await deleteGreetingsUi();
+    return Math.max(n, 0);
   }
 
   async function runBait(help) {
     const mode = help.bait;
     let res = { outcome: 'fail', text: 'why:no-response', deleted: false };
+    let pre = '';
     try {
-      if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 30000))) {
+      if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 120000))) {
         res = { outcome: 'fail', text: 'why:no-composer ' + where() };
       } else if (isChallenge()) {
         res = { outcome: 'fail', text: 'why:challenge ' + where() };
       } else if (isLoggedOut()) {
         res = { outcome: 'loggedout', text: '' };
+      } else if (mode !== 'verify' && mode !== 'delete' && (pre = limitText())) {
+        // Banner limit sudah tampil sebelum mengirim apa pun: itu sudah jawabannya (kolom chat sering dikunci saat limit)
+        res = { outcome: 'limit', text: pre };
       } else if (mode === 'send' || mode === 'continue') {
-        const cmd = mode === 'send' ? '.' : (help.baitCmd || 'Continue');
+        const cmd = mode === 'send' ? 'Hi' : (help.baitCmd || 'Continue');
         const err = await typeAndSend(cmd);
-        if (err) res = { outcome: 'fail', text: `why:${err} ${where()}` };
+        // Gagal terkirim karena kolom chat dikunci banner limit yang baru muncul: itu hasil limit, bukan kegagalan
+        if (err) res = limitText() ? { outcome: 'limit', text: limitText() } : { outcome: 'fail', text: `why:${err} ${where()}` };
         else {
-          const r = await waitOutcome(mode === 'send' ? 40000 : 15000);
+          const r = await waitOutcome(mode === 'send' ? 90000 : 15000, mode === 'send');
           if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
           else if (mode === 'continue') res = { outcome: r.outcome === 'free' ? 'sent' : r.outcome, text: r.text };
           else res = r;
         }
       } else if (mode === 'verify') {
-        const r = await waitFor(() => limitText() || hasMessages(), 25000, 300);
+        const r = await waitFor(() => limitText() || hasMessages(), 90000, 300);
         if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
         else {
           const lt = limitText();
           res = lt ? { outcome: 'limit', text: lt } : { outcome: 'free', text: '' };
-          res.deleted = await deleteChat();
+        }
+      } else if (mode === 'delete') {
+        // Dijalankan app setelah pancingan dan pengecekan akun ini selesai: hapus chat pancingan
+        const r = await waitFor(() => hasMessages(), 60000, 300);
+        if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
+        else {
+          let ok = await deleteChat();
+          const swept = await deleteGreetings();   // sapu juga chat "Greeting" lain di akun ini
+          if (swept > 0) ok = true;
+          res = ok ? { outcome: 'deleted', text: '', deleted: true } : { outcome: 'fail', text: `why:delete-failed ${where()}` };
         }
       }
     } catch (e) {
@@ -334,9 +525,12 @@
     send({ type: 'hello', url: location.href, title: document.title || '', challenge: isChallenge() });
 
     let help = null;
-    for (let i = 0; i < 80; i++) {   // halaman belum di-refresh: native menjawab wait=true
+    let helpErr = '';
+    for (let i = 0; i < 80; i++) {   // wait=true: halaman belum di-refresh. Jawaban kosong/error: coba lagi ~10 detik (jalur ke aplikasi kadang belum siap)
       help = await send({ type: 'loginHelp' });
-      if (!help || !help.wait) break;
+      if (help && help.error) { helpErr = help.error; help = null; }
+      if (help && !help.wait) break;
+      if (!help && i >= 20) break;
       await sleep(500);
     }
     help = help || {};
