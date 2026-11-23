@@ -219,8 +219,8 @@ public class MainActivity extends BridgeActivity {
         public void check(final PluginCall call) {
             final String accountId = call.getString("accountId", "default");
             final String url = call.getString("url", "https://claude.ai/new");
-            Integer t = call.getInt("timeoutMs", 24000);
-            final int timeout = t == null ? 24000 : t;
+            Integer t = call.getInt("timeoutMs", 240000);
+            final int timeout = t == null ? 240000 : t;
             GeckoActivity.runCheck(getContext().getApplicationContext(), accountId, url, timeout,
                     new CheckCallback() {
                         @Override
@@ -238,18 +238,19 @@ public class MainActivity extends BridgeActivity {
         }
 
         // Pancingan satu akun di sesi tersembunyi.
-        // mode "send"  : buka chat baru, kirim ".", hentikan respon secepatnya, laporkan limit / free
-        // mode "verify": buka chat pancingan (url), baca status limit di dalamnya, lalu hapus chat itu
+        // mode "send"  : buka chat baru, kirim "Hi", tunggu kalimat balasan Claude, laporkan limit / free
+        // mode "verify": buka chat pancingan (url), baca status limit di dalamnya
+        // mode "delete": buka chat pancingan (url) lalu hapus chat itu (setelah pengecekan akun selesai)
         @PluginMethod
         public void bait(final PluginCall call) {
             final String accountId = call.getString("accountId", "default");
             final String url = call.getString("url", "https://claude.ai/new");
             final String rawMode = call.getString("mode", "send");
-            final String mode = "verify".equals(rawMode) ? "verify" : "continue".equals(rawMode) ? "continue" : "send";
+            final String mode = "verify".equals(rawMode) ? "verify" : "delete".equals(rawMode) ? "delete" : "continue".equals(rawMode) ? "continue" : "send";
             // mode "continue": kirim Continue / command ke chat akun di sesi tersembunyi (tanpa membuka browser)
             final String command = call.getString("command", "");
-            Integer t = call.getInt("timeoutMs", 85000);
-            final int timeout = t == null ? 85000 : t;
+            Integer t = call.getInt("timeoutMs", 240000);
+            final int timeout = t == null ? 240000 : t;
             GeckoActivity.runBait(getContext().getApplicationContext(), accountId, url, mode, command, timeout,
                     new CheckCallback() {
                         @Override
@@ -698,7 +699,7 @@ public class MainActivity extends BridgeActivity {
                 return;
             }
             final JSONObject a = todo.optJSONObject(i);
-            GeckoActivity.runCheck(app, a.optString("id"), a.optString("url", "https://claude.ai/new"), 58000, new CheckCallback() {
+            GeckoActivity.runCheck(app, a.optString("id"), a.optString("url", "https://claude.ai/new"), 240000, new CheckCallback() {
                 @Override
                 public void done(JSObject res) {
                     String err = res.optString("error", "");
@@ -1111,7 +1112,7 @@ public class MainActivity extends BridgeActivity {
                                     o.put("wait", sCheckAccountId != null && !sReady);
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
                                     out = new GeckoResult<>();
-                                    out.complete(o);
+                                    out.complete(o.toString());   // String: pasti bisa diserialisasi GeckoView; halaman mem-parse JSON-nya
                                 } else if ("pasteCheck".equals(type)) {
                                     // Tombol Paste email ditekan: beri email akun sekali saja (tidak untuk sesi pengecekan latar belakang)
                                     JSONObject o = new JSONObject();
@@ -1121,7 +1122,7 @@ public class MainActivity extends BridgeActivity {
                                     o.put("email", give ? sCurrentEmail : "");
                                     o.put("paste", give);
                                     out = new GeckoResult<>();
-                                    out.complete(o);
+                                    out.complete(o.toString());   // String: pasti bisa diserialisasi GeckoView; halaman mem-parse JSON-nya
                                 } else if ("hello".equals(type)) {
                                     sHello = true;
                                     String hu = msg.optString("url", "");
