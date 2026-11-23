@@ -92,3 +92,91 @@ html[data-theme="default"] .himg.isdefault img { object-position: 6% center; }
 html[data-theme="default"] {
   --acc-bg: linear-gradient(135deg, rgba(4, 7, 12, .50) 0%, rgba(7, 21, 36, .36) 28%, rgba(14, 90, 130, .26) 64%, rgba(125, 211, 252, .20) 100%);
 }
+
+/* ---- Tema Lite: warna polos, tanpa gambar / wallpaper / gradasi / animasi berulang ---- */
+html[data-theme="lite"] {
+  --bg: #0f1216;
+  --bg-top: #0f1216;
+  --bg-end: #0f1216;
+  --panel-a: #171b21;
+  --panel-b: #171b21;
+  --ink-rgb: 15, 18, 22;
+  --text: #e8ecf1;
+  --muted: #8d97a6;
+  --line: rgba(255, 255, 255, .10);
+  --sky: #7aa2ff;
+  --sky-lt: #a9c1ff;
+  --sky-rgb: 122, 162, 255;
+  --cyan: #5b8def;
+  --cyan-rgb: 91, 141, 239;
+  --blue: #5b8def;
+  --blue-rgb: 91, 141, 239;
+  --amber: #e0b341;
+  --on-grad: #0b0f14;
+  --grad: #5b8def;                 /* satu warna polos, bukan gradasi */
+  --acc-bg: #171b21;
+  --a-black: #171b21;
+  --a-grad-alt: #171b21;
+}
+
+/* Tidak ada gambar di mana pun */
+html[data-theme="lite"] .bg::before,
+html[data-theme="lite"] .bg .homeimg,
+html[data-theme="lite"] .himg,
+html[data-theme="lite"] .auth-bg,
+html[data-theme="lite"] .auth-media,
+html[data-theme="lite"] .auth-logo { display: none !important; }
+html[data-theme="lite"] .bg { background: var(--bg); }
+html[data-theme="lite"] .auth { background: var(--bg); }
+html[data-theme="lite"] .auth-card { background: #151a20; box-shadow: none; border: 1px solid var(--line); }
+html[data-theme="lite"] .auth-fade { background: none; }
+html[data-theme="lite"] .auth-welcome { text-shadow: none; }
+
+/* Judul polos, tanpa kilau */
+html[data-theme="lite"] h1 { background: none; -webkit-text-fill-color: currentColor; color: var(--text); animation: none; }
+
+/* Animasi yang berulang terus dimatikan (animasi masuk / keluar kartu tetap, dipakai logika aplikasi) */
+html[data-theme="lite"] .acc.ready,
+html[data-theme="lite"] .acc.resume,
+html[data-theme="lite"] .acc.checking,
+html[data-theme="lite"] .acc.checking::after,
+html[data-theme="lite"] .acc.ready .go::after,
+html[data-theme="lite"] .acc.resume .go::after,
+html[data-theme="lite"] .acc.checking .link,
+html[data-theme="lite"] .firstguide .fg-arrow { animation: none; }
+html[data-theme="lite"] .acc.ready .go::after,
+html[data-theme="lite"] .acc.resume .go::after,
+html[data-theme="lite"] .acc.checking::after { display: none; }
+html[data-theme="lite"] * { text-shadow: none !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; }
+
+/* Banner akun: kotak polos, warna tepi menunjukkan status */
+html[data-theme="lite"] .acc { background: #171b21; border: 1px solid #2a313b; box-shadow: none; }
+html[data-theme="lite"] .acc.waiting { background: #1e1b13; border-color: #8a6d1f; }
+html[data-theme="lite"] .acc.ready { background: #131e2e; border-color: #3f6fd1; box-shadow: none; }
+html[data-theme="lite"] .acc.resume { background: #12211a; border-color: #2f9a5a; box-shadow: none; }
+html[data-theme="lite"] .acc.busy { background: #12211a; border-color: #2f9a5a; }
+html[data-theme="lite"] .acc.checking { background: #131e2e; border-color: #5b8def; box-shadow: none; }
+html[data-theme="lite"] .col + .col { border-image: none; border-left: 1px solid #262d37; }
+html[data-theme="lite"] .r2 { border-top-color: #262d37; }
+html[data-theme="lite"] .sumbar { background: #171b21; border-color: #2a313b; }
+html[data-theme="lite"] .sumbar i { background: #2a313b; }
+
+/* Tombol: warna polos */
+html[data-theme="lite"] .btn,
+html[data-theme="lite"] .go,
+html[data-theme="lite"] .tbtn.primary,
+html[data-theme="lite"] .tbtn.primary:active { background: #5b8def; color: #0b0f14; border: 0; box-shadow: none; }
+html[data-theme="lite"] .acc.resume .go { background: #3fb871; color: #06150d; box-shadow: none; }
+html[data-theme="lite"] .go:disabled { background: #2a313b; color: #8d97a6; opacity: 1; filter: none; }
+html[data-theme="lite"] .link,
+html[data-theme="lite"] .chev,
+html[data-theme="lite"] .menubtn,
+html[data-theme="lite"] .tbtn:not(.primary),
+html[data-theme="lite"] .btn-g,
+html[data-theme="lite"] .connect { background: #1f252d; border: 1px solid #323a46; color: var(--text); box-shadow: none; }
+html[data-theme="lite"] .btn-d { background: #1f252d; color: #f08585; border: 1px solid #5a2f33; }
+html[data-theme="lite"] .cswitch input:checked + i { background: #5b8def; }
+
+/* Panel samping (riwayat, control) dan toast: polos */
+html[data-theme="lite"] .hdrawer { background: #14181d; box-shadow: none; border-right: 1px solid #2a313b; }
+html[data-theme="lite"] #toast { background: #1f252d; border-color: #323a46; box-shadow: none; }
