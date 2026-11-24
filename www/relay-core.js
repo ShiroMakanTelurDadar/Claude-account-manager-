@@ -78,17 +78,45 @@
 
   // ---------- Rencana ----------
   // Balasan langkah 0 harus memuat satu blok ```json berisi {summary, steps:[{title, instructions, outputs, needs}]}
+  // Cadangan kalau blok kode tidak terbaca (pagar ``` hilang, bahasa blok aneh, dsb.): cari objek JSON berisi "steps" langsung di teks
+  function findJsonWithSteps(text) {
+    const s = String(text || '');
+    let tried = 0;
+    for (let i = s.indexOf('{'); i >= 0 && tried < 60; i = s.indexOf('{', i + 1)) {
+      tried++;
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      for (let k = i; k < s.length; k++) {
+        const c = s[k];
+        if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+        if (c === '"') inStr = true;
+        else if (c === '{') depth++;
+        else if (c === '}' && --depth === 0) {
+          try {
+            const j = JSON.parse(s.slice(i, k + 1));
+            if (j && Array.isArray(j.steps)) return j;
+          } catch (_) { /* bukan objek yang dicari */ }
+          break;
+        }
+      }
+    }
+    return null;
+  }
+
   function parsePlan(md) {
-    const blocks = extractBlocks(md).filter((b) => b.complete && (b.lang === 'json' || b.lang === '' || b.lang === 'plan'));
+    const blocks = extractBlocks(md).filter((b) => b.complete);
     let raw = null;
-    let err = 'tidak ada blok json yang utuh';
+    let err = 'tidak ada JSON rencana di balasan';
     for (const b of blocks) {
+      if (b.lang && b.lang !== 'json' && b.lang !== 'plan') continue;
       try {
         const j = JSON.parse(b.content);
         if (j && Array.isArray(j.steps)) { raw = j; break; }
         err = 'json tidak punya daftar "steps"';
       } catch (e) { err = 'json tidak valid: ' + e.message; }
     }
+    if (!raw) raw = findJsonWithSteps(md);
     if (!raw) return { ok: false, err };
     if (!raw.steps.length) return { ok: false, err: 'daftar langkah kosong' };
     if (raw.steps.length > MAX_STEPS) return { ok: false, err: `terlalu banyak langkah (${raw.steps.length}, maksimal ${MAX_STEPS})` };
