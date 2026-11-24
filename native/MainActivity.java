@@ -246,8 +246,11 @@ public class MainActivity extends BridgeActivity {
             final String accountId = call.getString("accountId", "default");
             final String url = call.getString("url", "https://claude.ai/new");
             final String rawMode = call.getString("mode", "send");
-            final String mode = "verify".equals(rawMode) ? "verify" : "delete".equals(rawMode) ? "delete" : "continue".equals(rawMode) ? "continue" : "send";
+            final String mode = "verify".equals(rawMode) ? "verify" : "delete".equals(rawMode) ? "delete" : "continue".equals(rawMode) ? "continue"
+                    : "work".equals(rawMode) ? "work" : "dump".equals(rawMode) ? "dump" : "send";
             // mode "continue": kirim Continue / command ke chat akun di sesi tersembunyi (tanpa membuka browser)
+            // mode "work"    : (estafet) chat baru, kirim prompt langkah, tunggu sampai selesai / limit. Hasil: teks akhir, salinan parsial, data percakapan
+            // mode "dump"    : buka chat (url), ambil data percakapan lewat API internal claude.ai, tanpa mengirim apa pun
             final String command = call.getString("command", "");
             Integer t = call.getInt("timeoutMs", 240000);
             final int timeout = t == null ? 240000 : t;
@@ -258,6 +261,184 @@ public class MainActivity extends BridgeActivity {
                             call.resolve(res);
                         }
                     });
+        }
+
+        // ---- Penyimpanan proyek (estafet) ----
+        // Semua file proyek ada di <files>/Projects/<nama>/{In,Out,State}. Path dari JS selalu relatif terhadap folder Projects.
+        private File projRoot() {
+            File d = new File(getContext().getFilesDir(), "Projects");
+            if (!d.exists()) d.mkdirs();
+            return d;
+        }
+
+        private File projFile(String rel) throws Exception {
+            if (rel == null) rel = "";
+            rel = rel.replace('\\', '/');
+            if (rel.startsWith("/") || rel.contains("..")) throw new Exception("path tidak valid");
+            File root = projRoot();
+            File f = rel.isEmpty() ? root : new File(root, rel);
+            String rp = root.getCanonicalPath();
+            String fp = f.getCanonicalPath();
+            if (!fp.equals(rp) && !fp.startsWith(rp + File.separator)) throw new Exception("path tidak valid");
+            return f;
+        }
+
+        private static byte[] readAll(File f) throws Exception {
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            try {
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                return bo.toByteArray();
+            } finally {
+                in.close();
+            }
+        }
+
+        private static void deleteTree(File f) {
+            File[] kids = f.listFiles();
+            if (kids != null) for (File k : kids) deleteTree(k);
+            f.delete();
+        }
+
+        private static void walk(File dir, String prefix, JSArray out) {
+            File[] kids = dir.listFiles();
+            if (kids == null) return;
+            for (File k : kids) {
+                String rel = prefix.isEmpty() ? k.getName() : prefix + "/" + k.getName();
+                if (k.isDirectory()) {
+                    walk(k, rel, out);
+                } else {
+                    JSObject o = new JSObject();
+                    o.put("path", rel);
+                    o.put("size", k.length());
+                    o.put("mtime", k.lastModified());
+                    out.put(o);
+                }
+            }
+        }
+
+        // Tulis file (teks, atau base64 kalau b64 = true). Ditulis ke file sementara dulu lalu di-rename, supaya file lama tidak rusak kalau terputus.
+        @PluginMethod
+        public void projWrite(PluginCall call) {
+            try {
+                File f = projFile(call.getString("path", ""));
+                if (f.equals(projRoot())) { call.reject("path kosong"); return; }
+                String content = call.getString("content", "");
+                boolean b64 = call.getBoolean("b64", false);
+                boolean append = call.getBoolean("append", false);
+                byte[] data = b64 ? android.util.Base64.decode(content, android.util.Base64.DEFAULT) : content.getBytes(StandardCharsets.UTF_8);
+                File dir = f.getParentFile();
+                if (dir != null && !dir.exists()) dir.mkdirs();
+                if (append) {
+                    FileOutputStream os = new FileOutputStream(f, true);
+                    try { os.write(data); } finally { os.close(); }
+                } else {
+                    File tmp = new File(dir, f.getName() + ".tmp");
+                    FileOutputStream os = new FileOutputStream(tmp);
+                    try { os.write(data); os.getFD().sync(); } finally { os.close(); }
+                    if (f.exists()) f.delete();
+                    if (!tmp.renameTo(f)) { call.reject("rename gagal"); return; }
+                }
+                JSObject r = new JSObject();
+                r.put("size", f.length());
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("projWrite gagal: " + e.getMessage());
+            }
+        }
+
+        @PluginMethod
+        public void projRead(PluginCall call) {
+            try {
+                File f = projFile(call.getString("path", ""));
+                JSObject r = new JSObject();
+                if (!f.isFile()) {
+                    r.put("exists", false);
+                    call.resolve(r);
+                    return;
+                }
+                byte[] data = readAll(f);
+                boolean b64 = call.getBoolean("b64", false);
+                r.put("exists", true);
+                r.put("size", data.length);
+                r.put("content", b64 ? android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP) : new String(data, StandardCharsets.UTF_8));
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("projRead gagal: " + e.getMessage());
+            }
+        }
+
+        // Daftar file di bawah satu folder (rekursif). Kalau folder belum ada: daftar kosong. dirs = true: hanya nama sub-folder tingkat pertama.
+        @PluginMethod
+        public void projList(PluginCall call) {
+            try {
+                File d = projFile(call.getString("path", ""));
+                JSArray arr = new JSArray();
+                if (call.getBoolean("dirs", false)) {
+                    File[] kids = d.listFiles();
+                    if (kids != null) for (File k : kids) if (k.isDirectory()) arr.put(k.getName());
+                } else if (d.isDirectory()) {
+                    walk(d, "", arr);
+                }
+                JSObject r = new JSObject();
+                r.put("items", arr);
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("projList gagal: " + e.getMessage());
+            }
+        }
+
+        @PluginMethod
+        public void projDelete(PluginCall call) {
+            try {
+                File f = projFile(call.getString("path", ""));
+                if (f.equals(projRoot())) { call.reject("tidak boleh menghapus folder utama"); return; }
+                if (f.exists()) deleteTree(f);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("projDelete gagal: " + e.getMessage());
+            }
+        }
+
+        // Salin satu file proyek ke folder Download (Android 10+ tanpa izin tambahan) supaya bisa dibuka aplikasi lain
+        @PluginMethod
+        public void projExport(PluginCall call) {
+            try {
+                File f = projFile(call.getString("path", ""));
+                if (!f.isFile()) { call.reject("file tidak ada"); return; }
+                String name = call.getString("name", f.getName());
+                String ext = name.lastIndexOf('.') >= 0 ? name.substring(name.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT) : "";
+                String mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                if (mime == null) mime = "application/octet-stream";
+                byte[] data = readAll(f);
+                JSObject r = new JSObject();
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentResolver cr = getContext().getContentResolver();
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = cr.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) { call.reject("Tidak bisa membuat file"); return; }
+                    OutputStream os = cr.openOutputStream(uri);
+                    if (os == null) { call.reject("Tidak bisa menulis file"); return; }
+                    try { os.write(data); } finally { os.close(); }
+                    r.put("where", "Download/" + name);
+                } else {
+                    File dir = getContext().getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+                    if (dir == null) { call.reject("Penyimpanan tidak tersedia"); return; }
+                    if (!dir.exists()) dir.mkdirs();
+                    File out = new File(dir, name);
+                    FileOutputStream os = new FileOutputStream(out);
+                    try { os.write(data); } finally { os.close(); }
+                    r.put("where", out.getAbsolutePath());
+                }
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("projExport gagal: " + e.getMessage());
+            }
         }
 
         // ---- Cek saat aplikasi ditutup (lihat BgScheduler) ----
@@ -847,6 +1028,10 @@ public class MainActivity extends BridgeActivity {
         private static String sBaitText = "";
         private static String sBaitUrl = "";
         private static boolean sBaitDeleted = false;
+        // Estafet: data tambahan dari halaman (JSON percakapan) dan salinan terakhir teks balasan yang sedang mengalir.
+        // Salinan parsial tetap ada walau sesi berakhir karena limit, supaya file yang sudah utuh bisa diselamatkan.
+        private static String sBaitData = "";
+        private static volatile String sWorkPartial = "";
 
         // Refresh halaman sebelum dibaca (sesi latar belakang).
         // Halaman dimuat, lalu di-refresh (lewati cache) seperti tombol refresh di browser. Laporan halaman
@@ -1062,13 +1247,16 @@ public class MainActivity extends BridgeActivity {
             sBaitText = "";
             sBaitUrl = "";
             sBaitDeleted = false;
+            sBaitData = "";
+            sWorkPartial = "";
         }
 
-        private static synchronized void recordBait(String outcome, String text, String url, boolean deleted) {
+        private static synchronized void recordBait(String outcome, String text, String url, boolean deleted, String data) {
             sBaitOutcome = outcome;
             sBaitText = text;
             sBaitUrl = url;
             sBaitDeleted = deleted;
+            sBaitData = data == null ? "" : data;
             sBaitDone = true;
         }
 
@@ -1137,7 +1325,13 @@ public class MainActivity extends BridgeActivity {
                                         recordBait(msg.optString("outcome", "fail"),
                                                 msg.optString("text", ""),
                                                 msg.optString("url", ""),
-                                                msg.optBoolean("deleted", false));
+                                                msg.optBoolean("deleted", false),
+                                                msg.optString("data", ""));
+                                    }
+                                } else if ("workPartial".equals(type)) {
+                                    // Salinan teks balasan yang sedang mengalir (mode "work"). Hanya yang terbaru disimpan.
+                                    if (sCheckAccountId != null && sReady && "work".equals(sBaitMode)) {
+                                        sWorkPartial = msg.optString("text", "");
                                     }
                                 } else {
                                     String state = msg.optString("state", "limit");
@@ -1319,7 +1513,8 @@ public class MainActivity extends BridgeActivity {
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
                     // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
-                    setupSession(s, h, !"send".equals(mode));
+                    // work: chat baru, tidak perlu refresh (seperti send). dump: chat lama, di-refresh dulu.
+                    setupSession(s, h, !"send".equals(mode) && !"work".equals(mode));
                     s.open(sRuntime);
                     attachHidden(s, ctx);
                     s.setActive(true);
@@ -1365,6 +1560,9 @@ public class MainActivity extends BridgeActivity {
                                     r.put("text", sBaitDone ? sBaitText : "why:timeout");
                                     r.put("url", sBaitUrl);
                                     r.put("deleted", sBaitDeleted);
+                                    r.put("data", sBaitData);
+                                    r.put("partial", sWorkPartial);
+                                    r.put("timedOut", !sBaitDone);
                                 }
                                 r.put("diag", buildDiag());
                                 r.put("view", sViewKind);
