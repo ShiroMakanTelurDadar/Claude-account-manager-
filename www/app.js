@@ -191,6 +191,8 @@ async function scheduleAll() {
         schedule: { at: new Date(a.resetAt), allowWhileIdle: true },
         extra: { accountId: a.id },
       }));
+    // Proyek estafet yang menunggu limit (relay.js) menitipkan notifikasinya di sini, supaya tidak ikut terhapus oleh pembersihan di atas
+    if (typeof window.relayNotifItems === 'function') items.push(...window.relayNotifItems());
     if (items.length) await LN.schedule({ notifications: items });
   } catch (e) { console.error(e); }
 }
