@@ -260,7 +260,12 @@
         job.tries = job.tries || {};
         job.tries.plan = (job.tries.plan || 0) + 1;
         job.error = 'Rencana belum valid: ' + r.err;
-        await logEv(name, 'plan-bad', { err: r.err, try: job.tries.plan });
+        // Bentuk balasan dicatat supaya penyebab bisa dilihat: blok apa saja yang terbaca (bahasa:utuh/terbuka:panjang), awal dan akhir teks
+        await logEv(name, 'plan-bad', {
+          err: r.err, try: job.tries.plan,
+          blocks: RC.extractBlocks(text).map((b) => `${b.lang || '-'}:${b.complete ? 'utuh' : 'terbuka'}:${b.content.length}`),
+          head: text.slice(0, 140), tail: text.slice(-100),
+        });
         if (job.tries.plan >= MAX_TRIES) return fail(job, 'Rencana gagal dibuat ' + MAX_TRIES + 'x: ' + r.err);
       }
       return 'next';
