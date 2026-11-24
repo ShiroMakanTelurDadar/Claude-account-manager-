@@ -61,6 +61,18 @@ Status labels on each row:
 | Ready | The limit ended and projects are ready to continue |
 | Resume | A Continue / Try again button was seen in the chat |
 
+### Relay projects (new, first version)
+
+Button "📁 Proyek estafet" under the tools row. A project is split into small steps. Each step runs in a NEW chat of the next usable account, so a limit in the middle of a step only costs that step.
+
+- **Plan (step 0):** the brief goes to the first account, which must answer with a JSON plan (steps, output files, which earlier files each step needs). Saved as `State/plan.json`.
+- **Each step:** a hand-off prompt is built by the app (project summary, `progress.md`, only the needed Out files). Claude must write every file as a line `FILE: path` plus one code block, with no sandbox and no commands. The app copies the reply while it streams, so complete code blocks survive a limit.
+- **Limit in the middle:** the account is marked Limit with its reset time, complete files are kept, and the same step is asked again on the next account for the missing files only. If all accounts are limited the job waits and a notification is set for the earliest reset.
+- **Storage:** `<app files>/Projects/<name>/{In,Out,State}`. "⬇ Hasil" copies Out files to Download. State holds `job.json`, `plan.json`, `progress.md`, `log.jsonl`, and `raw/` (raw replies and conversation data).
+- **"🔬 Uji chat":** reads the conversation data of a chat from claude.ai's internal API and saves it as `dump-....json` in Download. Use it on a chat cut by the limit to see what the server kept (sandbox commands, files, text before the limit).
+- **Not done yet:** SD card / Google Drive, sending attachments, downloading files Claude made in its sandbox, video rendering. The internal API is unofficial and may change.
+- **Pure logic tests:** `www/relay-core.js` has no device code and can be tested in Node.
+
 ### Build the APK (GitHub Actions)
 
 The APK is built by `.github/workflows/build-apk.yml`. It runs on every push to `main` or `master`, or by hand from the Actions tab (Run workflow).
@@ -169,6 +181,18 @@ Arti label di tiap baris:
 | Running | Claude sedang bekerja di chat |
 | Ready | Limit selesai dan project siap dilanjutkan |
 | Resume | Tombol Continue / Try again terlihat di chat |
+
+### Proyek estafet (baru, versi pertama)
+
+Tombol "📁 Proyek estafet" di bawah baris alat. Proyek dipecah jadi langkah kecil. Tiap langkah jalan di chat BARU milik akun berikutnya yang bisa dipakai, jadi limit di tengah langkah hanya merugikan langkah itu.
+
+- **Rencana (langkah 0):** brief dikirim ke akun pertama, yang harus menjawab dengan rencana JSON (langkah, file hasil, file lama yang dibutuhkan tiap langkah). Disimpan sebagai `State/plan.json`.
+- **Tiap langkah:** paket serah-terima dibuat aplikasi (ringkasan proyek, `progress.md`, hanya file Out yang dibutuhkan). Claude diminta menulis tiap file sebagai baris `FILE: path` plus satu blok kode, tanpa sandbox dan tanpa perintah. Aplikasi menyalin balasan selagi mengalir, jadi blok kode yang sudah utuh selamat dari limit.
+- **Limit di tengah langkah:** akun ditandai Limit beserta jam resetnya, file yang utuh disimpan, dan langkah yang sama diminta ulang di akun berikutnya hanya untuk file yang kurang. Kalau semua akun limit, job menunggu dan notifikasi dipasang di jam reset paling awal.
+- **Penyimpanan:** `<folder app>/Projects/<nama>/{In,Out,State}`. "⬇ Hasil" menyalin file Out ke Download. State berisi `job.json`, `plan.json`, `progress.md`, `log.jsonl`, dan `raw/` (balasan mentah dan data percakapan).
+- **"🔬 Uji chat":** membaca data percakapan sebuah chat lewat API internal claude.ai dan menyimpannya sebagai `dump-....json` di Download. Pakai pada chat yang terpotong limit untuk melihat apa yang disimpan server (perintah sandbox, file, teks sebelum limit).
+- **Belum ada:** SD card / Google Drive, kirim lampiran, unduh file buatan sandbox Claude, render video. API internal tidak resmi dan bisa berubah.
+- **Uji logika:** `www/relay-core.js` tidak berisi kode perangkat dan bisa diuji di Node.
 
 ### Build APK (GitHub Actions)
 
