@@ -409,10 +409,148 @@
     return Math.max(n, 0);
   }
 
+  // ---------- Estafet: kerja satu langkah, salin balasan, ambil data percakapan ----------
+  // Balasan terakhir Claude diubah ke teks bergaya markdown. Blok kode (<pre>) menjadi ```bahasa ... ```, sehingga aplikasi bisa
+  // memisahkan file. Selama Claude masih menulis, blok kode terakhir dianggap belum selesai: penutup ``` sengaja dibuang.
+  const MSG_SEL = '[class*="font-claude-message"], [class*="font-claude-response"]';
+  function replyEls() {
+    const all = [...document.querySelectorAll(MSG_SEL)].filter((e) => !(e.parentElement && e.parentElement.closest(MSG_SEL)));
+    const users = [...document.querySelectorAll('[data-testid="user-message"]')];
+    const last = users[users.length - 1];
+    return last ? all.filter((e) => last.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) : all;
+  }
+  function mdOf(root) {
+    let out = '';
+    const walk = (n) => {
+      if (n.nodeType === 3) { out += n.nodeValue; return; }
+      if (n.nodeType !== 1) return;
+      const t = n.tagName;
+      if (t === 'PRE') {
+        const code = n.querySelector('code');
+        const body = ((code || n).textContent || '').replace(/\n$/, '');
+        const lang = code ? ((/language-([\w+-]+)/.exec(code.className || '') || [])[1] || '') : '';
+        if (out && !out.endsWith('\n')) out += '\n';
+        out += '```' + lang + '\n' + body + '\n```\n';
+        return;
+      }
+      if (t === 'BR') { out += '\n'; return; }
+      const block = /^(P|DIV|LI|H[1-6]|UL|OL|BLOCKQUOTE|TABLE|TR)$/.test(t);
+      if (block && out && !out.endsWith('\n')) out += '\n';
+      if (t === 'LI') out += '- ';
+      for (const c of n.childNodes) walk(c);
+      if (block && !out.endsWith('\n')) out += '\n';
+    };
+    walk(root);
+    return out;
+  }
+  function replyMarkdown(streaming) {
+    let md = replyEls().map(mdOf).join('\n').replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    if (!md) md = claudeReplyText();   // cadangan kalau nama class pesan berubah: teks polos tanpa pemisah blok kode
+    // Berakhir tepat di penutup blok kode = tidak ada tulisan setelahnya: selama masih mengalir, blok itu belum tentu utuh
+    if (streaming && /\n```$/.test(md)) md = md.slice(0, -4).trimEnd();
+    return md;
+  }
+
+  // Data percakapan dari API internal claude.ai (cookie halaman ikut terkirim). Memuat isi perintah / kode yang dijalankan Claude di
+  // sandbox dan rujukan file, walau di layar semuanya tertutup ("Ran a command"). Tidak resmi: bentuk datanya bisa berubah,
+  // jadi hasil mentahnya ikut disimpan untuk diperiksa.
+  async function fetchConvo() {
+    const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
+    if (!m) return { err: 'bukan halaman chat' };
+    try {
+      const r = await fetch('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
+      if (!r.ok) return { err: 'organizations ' + r.status };
+      const orgs = await r.json();
+      let last = '';
+      for (const o of Array.isArray(orgs) ? orgs : []) {
+        if (!o || !o.uuid) continue;
+        for (const q of ['?tree=True&rendering_mode=messages&render_all_tools=true', '']) {
+          const c = await fetch(`/api/organizations/${o.uuid}/chat_conversations/${m[1]}${q}`, { credentials: 'include', headers: { accept: 'application/json' } });
+          last = String(c.status);
+          if (c.ok) return { text: await c.text() };
+        }
+      }
+      return { err: 'chat_conversations ' + last };
+    } catch (e) { return { err: String((e && e.message) || e) }; }
+  }
+  function walkJson(v, fn, depth) {
+    if (v == null || depth > 40) return;
+    if (Array.isArray(v)) { for (const x of v) walkJson(x, fn, depth + 1); return; }
+    if (typeof v === 'object') { fn(v); for (const k of Object.keys(v)) walkJson(v[k], fn, depth + 1); }
+  }
+  // Ringkasan yang pasti berguna: isi tiap tool_use (nama + input) dan objek yang tampak seperti rujukan file
+  function extractConvo(text) {
+    const out = { tools: [], files: [] };
+    let j;
+    try { j = JSON.parse(text); } catch (_) { out.err = 'bukan JSON'; return out; }
+    const seen = new Set();
+    walkJson(j, (o) => {
+      if (o.type === 'tool_use' && o.input !== undefined) {
+        const input = JSON.stringify(o.input);
+        out.tools.push({ name: String(o.name || ''), id: String(o.id || ''), input: input.length > 300000 ? input.slice(0, 300000) : input, cut: input.length > 300000 });
+      }
+      if (o.file_uuid || o.file_name || (o.file_kind && o.path)) {
+        const flat = {};
+        for (const k of Object.keys(o)) { const v = o[k]; if ((typeof v === 'string' && v.length < 400) || typeof v === 'number' || typeof v === 'boolean') flat[k] = v; }
+        const key = JSON.stringify(flat);
+        if (!seen.has(key)) { seen.add(key); out.files.push(flat); }
+      }
+    }, 0);
+    return out;
+  }
+  async function buildData() {
+    const c = await fetchConvo();
+    if (!c.text) return JSON.stringify({ at: Date.now(), url: location.href, err: c.err || 'kosong' });
+    const ex = extractConvo(c.text);
+    return JSON.stringify({ at: Date.now(), url: location.href, size: c.text.length, tools: ex.tools, files: ex.files, parseErr: ex.err || '', raw: c.text.length <= 900000 ? c.text : '' });
+  }
+
+  // Tunggu Claude bekerja sampai selesai atau kena limit. Salinan balasan dikirim ke aplikasi tiap kali berubah (paling cepat tiap 2,5 detik),
+  // sehingga kalau sesi terputus oleh limit, teks terakhir sudah ada di aplikasi. Perubahan halaman dipantau lewat MutationObserver.
+  async function watchWork() {
+    let dirty = true;
+    const mo = new MutationObserver(() => { dirty = true; });
+    mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+    const started = Date.now();
+    let lastSent = '';
+    let lastSentAt = 0;
+    let idleSince = 0;
+    const push = (md) => { lastSent = md; lastSentAt = Date.now(); return send({ type: 'workPartial', text: md }); };
+    try {
+      for (;;) {
+        await sleep(1000);
+        const lt = limitText();
+        const busy = !!stopBtn() || hasBusyText();
+        if (lt) {
+          await stopResponse();
+          const md = replyMarkdown(true);
+          if (md && md !== lastSent) await push(md);
+          return { outcome: 'limit', text: lt };
+        }
+        if (isLoggedOut()) return { outcome: 'loggedout', text: '' };
+        if (isChallenge()) return { outcome: 'fail', text: 'why:challenge ' + where() };
+        const md = replyMarkdown(busy);
+        if (md && md !== lastSent && (dirty || Date.now() - lastSentAt > 5000) && Date.now() - lastSentAt > 2500) await push(md);
+        dirty = false;
+        if (!busy && md) {
+          if (!idleSince) idleSince = Date.now();
+          if (Date.now() - idleSince > 4000) {
+            const fin = replyMarkdown(false);
+            await push(fin);
+            if (limitText()) return { outcome: 'limit', text: limitText() };
+            return { outcome: resumeBtn() ? 'paused' : 'done', text: fin };
+          }
+        } else idleSince = 0;
+        if (!busy && !md && Date.now() - started > 90000) return { outcome: 'fail', text: 'why:no-response ' + where() };
+      }
+    } finally { mo.disconnect(); }
+  }
+
   async function runBait(help) {
     const mode = help.bait;
     let res = { outcome: 'fail', text: 'why:no-response', deleted: false };
     let pre = '';
+    let data = '';
     try {
       if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 120000))) {
         res = { outcome: 'fail', text: 'why:no-composer ' + where() };
@@ -420,9 +558,19 @@
         res = { outcome: 'fail', text: 'why:challenge ' + where() };
       } else if (isLoggedOut()) {
         res = { outcome: 'loggedout', text: '' };
-      } else if (mode !== 'verify' && mode !== 'delete' && (pre = limitText())) {
+      } else if (mode !== 'verify' && mode !== 'delete' && mode !== 'dump' && (pre = limitText())) {
         // Banner limit sudah tampil sebelum mengirim apa pun: itu sudah jawabannya (kolom chat sering dikunci saat limit)
         res = { outcome: 'limit', text: pre };
+      } else if (mode === 'dump') {
+        // Hanya ambil data percakapan chat ini (tanpa mengirim apa pun). Dipakai untuk menguji apa yang tersimpan di server.
+        const r = await waitFor(() => hasMessages(), 60000, 300);
+        if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
+        else { data = await buildData(); res = { outcome: 'dumped', text: replyMarkdown(false) }; }
+      } else if (mode === 'work') {
+        const err = await typeAndSend(help.baitCmd || '');
+        if (err) res = limitText() ? { outcome: 'limit', text: limitText() } : { outcome: 'fail', text: `why:${err} ${where()}` };
+        else res = await watchWork();
+        if (res.outcome !== 'loggedout') data = await buildData();   // juga saat limit: percakapan di server tetap bisa dibaca
       } else if (mode === 'send' || mode === 'continue') {
         const cmd = mode === 'send' ? 'Hi' : (help.baitCmd || 'Continue');
         const err = await typeAndSend(cmd);
@@ -455,7 +603,7 @@
     } catch (e) {
       res = { outcome: 'fail', text: `why:error ${(e && e.message) || e}` };
     }
-    await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted });
+    await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted, data });
   }
 
   // ---------- Isi email dan command ----------
