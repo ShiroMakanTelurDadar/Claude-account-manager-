@@ -1,0 +1,56 @@
+/* Estafet: slide proyek, kartu, jendela kecil. Memakai variabel warna tema yang ada (styles.css / theme.css). */
+.relaybtn { display: block; width: calc(100% - 8px); margin: 0 4px 6px; height: 38px; border-radius: 12px; font-size: 13px; }
+
+.rbackdrop {
+  position: fixed; inset: 0; z-index: 26; background: rgba(var(--ink-rgb), .55);
+  opacity: 0; pointer-events: none; transition: opacity .25s ease;
+}
+.rbackdrop.show { opacity: 1; pointer-events: auto; }
+.rdrawer {
+  position: fixed; top: 0; bottom: 0; right: 0; z-index: 27;
+  width: 94vw; max-width: 460px;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: calc(14px + env(safe-area-inset-top)) 12px calc(14px + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border-left: 1px solid rgba(var(--sky-rgb), .3);
+  box-shadow: -10px 0 40px -12px rgba(0, 0, 0, .8);
+  transform: translateX(105%); visibility: hidden;
+  transition: transform .3s var(--ease), visibility 0s linear .3s;
+}
+.rdrawer.open { transform: none; visibility: visible; transition: transform .3s var(--ease), visibility 0s; }
+
+.rlist { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; -webkit-overflow-scrolling: touch; }
+.rempty { margin: 4px; }
+.ritem {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 14px;
+  background: rgba(var(--ink-rgb), .58); border: 1px solid var(--line); border-left: 3px solid var(--sky);
+}
+.ritem.bad { border-left-color: #f87171; }
+.rtop { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rname { font-size: 14px; word-break: break-all; }
+.rbadge { font-size: 11px; color: var(--sky-lt); background: rgba(var(--sky-rgb), .14); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.ritem.bad .rbadge { color: #fca5a5; background: rgba(248, 113, 113, .14); }
+.rbar { height: 5px; border-radius: 3px; background: rgba(var(--sky-rgb), .14); overflow: hidden; }
+.rbar i { display: block; height: 100%; background: var(--grad); transition: width .4s var(--ease); }
+.rbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.rbtns .rb { flex: 1 1 0; min-width: 0; padding: 8px 6px; font-size: 13px; white-space: nowrap; text-align: center; }
+
+.rmodal {
+  position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, .6);
+}
+.rbox {
+  width: 100%; max-width: 420px; max-height: 88vh; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; border-radius: 16px; background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+  border: 1px solid rgba(var(--sky-rgb), .3);
+}
+.rbox input[type="text"], .rbox input:not([type]), .rbox textarea, .rbox select { width: 100%; }
+.rlog {
+  margin: 0; padding: 8px; max-height: 46vh; overflow: auto; border-radius: 10px; font: 11px/1.45 monospace;
+  white-space: pre-wrap; word-break: break-all; color: var(--muted); background: rgba(var(--ink-rgb), .7); border: 1px solid var(--line);
+}
+.rpool { display: flex; flex-direction: column; gap: 4px; }
+.rpick { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; }
+.rpick label { display: flex; align-items: center; gap: 4px; min-width: 0; word-break: break-all; }
+.rmv { padding: 2px 9px; font-size: 12px; }
+.rerr { color: #fca5a5; min-height: 1em; }
