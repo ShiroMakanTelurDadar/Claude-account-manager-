@@ -578,6 +578,6 @@
     await refreshJobs();
   }
 
-  window.Relay = { runJob, createProject, refreshJobs, dumpChat };
+  window.Relay = { runJob, createProject, refreshJobs, dumpChat, markLimit };
   if (window.Auth && Auth.ready) Auth.ready.then(() => setTimeout(init, 300)); else setTimeout(init, 1500);
 })();
