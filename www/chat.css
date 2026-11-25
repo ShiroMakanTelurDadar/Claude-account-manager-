@@ -1,0 +1,76 @@
+/* Halaman chat: kolom chat (kiri) + panel (kanan). Memakai variabel warna tema yang ada. */
+
+.chatpage {
+  position: fixed; inset: 0; z-index: 30; display: grid;
+  transform: translateX(100%); visibility: hidden; transition: transform .3s var(--ease), visibility 0s linear .3s; touch-action: pan-y;
+  grid-template-columns: minmax(0, 1fr) clamp(118px, 31vw, 210px); gap: 8px;
+  padding: calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
+  background: var(--bg, #04070c); color: inherit;
+}
+.chatpage.show { transform: none; visibility: visible; transition: transform .3s var(--ease), visibility 0s; }
+.chatpage.drag { visibility: visible; transition: none; }
+body.chat-open { overflow: hidden; }
+
+/* Kolom chat */
+.cchat {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+  border-radius: 16px; border: 1.5px solid rgba(var(--sky-rgb), .38);
+  background: linear-gradient(180deg, var(--panel-a), var(--panel-b));
+}
+.cphead { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.cback {
+  flex: none; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; padding: 0;
+  border: 2px solid var(--sky); color: var(--sky-lt); background: rgba(var(--sky-rgb), .08);
+}
+.cback svg { width: 20px; height: 20px; }
+.cback:active { transform: scale(.92); }
+.cwho { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cnew { flex: none; font-size: 12px; padding: 6px 10px; border-radius: 10px; color: var(--sky-lt); border: 1px solid var(--line); background: rgba(var(--sky-rgb), .06); }
+
+.cpmsgs { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px; -webkit-overflow-scrolling: touch; }
+.cmempty { margin: auto; text-align: center; white-space: pre-line; font-size: 13px; color: var(--muted); }
+.cpmsg { max-width: 92%; padding: 8px 11px; border-radius: 14px; font-size: 14px; line-height: 1.45; word-break: break-word; display: flex; flex-direction: column; gap: 6px; }
+.cpmsg.user { align-self: flex-end; background: var(--grad); color: var(--on-grad); border-bottom-right-radius: 4px; }
+.cpmsg.ai { align-self: flex-start; background: rgba(var(--ink-rgb), .62); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.cpmsg.sys { align-self: center; max-width: 100%; font-size: 12px; color: #fbbf24; background: rgba(251, 191, 36, .1); border: 1px solid rgba(251, 191, 36, .3); text-align: center; }
+.cpmsg.wait { color: var(--muted); font-style: italic; animation: cpulse 1.4s ease-in-out infinite; }
+html[data-theme="lite"] .cpmsg.wait { animation: none; }
+@keyframes cpulse { 50% { opacity: .45; } }
+.cmtext { white-space: pre-wrap; }
+.cmcode { margin: 0; padding: 8px; max-height: 40vh; overflow: auto; border-radius: 8px; font: 11.5px/1.45 monospace; white-space: pre; color: var(--sky-lt); background: rgba(0, 0, 0, .45); border: 1px solid var(--line); }
+.cpmsg.user .cmcode { color: inherit; background: rgba(0, 0, 0, .18); }
+
+.cbar { display: flex; align-items: flex-end; gap: 6px; padding: 8px; border-top: 1px solid var(--line); }
+.cinput {
+  flex: 1; min-width: 0; resize: none; max-height: 120px; padding: 9px 11px; border-radius: 12px; font-size: 14px; line-height: 1.4;
+  border: 1px solid var(--line); background: rgba(var(--ink-rgb), .6); color: inherit;
+}
+.cinput::placeholder { font-style: italic; color: var(--muted); }
+.csend { flex: none; height: 38px; padding: 0 14px; }
+.csend:disabled { opacity: .45; }
+
+/* Panel kanan */
+.cside { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.chbtn { width: 100%; height: 40px; flex: none; border-radius: 10px; font-size: 12.5px; padding: 0 4px; white-space: nowrap; }
+.cpanel {
+  display: flex; flex-direction: column; min-height: 0; flex: none; overflow: hidden;
+  border-radius: 12px; border: 1.5px solid rgba(var(--sky-rgb), .38); background: rgba(var(--ink-rgb), .5);
+}
+.cpanel.grow { flex: 1 1 auto; min-height: 120px; }
+.cptitle { display: flex; align-items: center; justify-content: space-between; gap: 4px; padding: 5px 8px; font-size: 12px; font-weight: 700; font-style: italic; border-bottom: 1px solid var(--line); color: var(--sky-lt); }
+.cflist { display: flex; flex-direction: column; gap: 2px; padding: 4px; max-height: 22vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.cpanel.grow .cflist { max-height: none; flex: 1; }
+.cfnone { padding: 6px; font-size: 11px; color: var(--muted); text-align: center; }
+.cfile { display: flex; align-items: center; gap: 4px; padding: 3px 2px; font-size: 11.5px; }
+.cfile input[type="checkbox"] { flex: none; width: 15px; height: 15px; margin: 0; }
+.cfname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfbtn { flex: none; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 7px; font-size: 12px; color: var(--sky-lt); border: 1px solid var(--line); background: rgba(var(--sky-rgb), .06); }
+.cfbtn.add { font-size: 14px; }
+
+.cacc { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px; border-radius: 9px; text-align: left; color: inherit; border: 1px solid transparent; background: transparent; }
+.cacc.on { border-color: var(--sky); background: rgba(var(--sky-rgb), .12); }
+.cdot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #34d399; }
+.cacc.lim .cdot { background: #f87171; }
+.cainfo { display: flex; flex-direction: column; min-width: 0; }
+.cainfo b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cainfo small { font-size: 10px; color: var(--muted); }
