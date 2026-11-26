@@ -64,21 +64,21 @@
       case 'plan': return `Rencana siap: ${o.steps} langkah.`;
       case 'plan-bad': return `Rencana belum valid (${o.err || ''}), diulang. Percobaan ${o.try}.`;
       case 'files': return `${o.saved} file disimpan (${o.got}/${o.of}).`;
-      case 'step-done': return `Langkah ${o.tag} selesai${acc}.`;
+      case 'step-done': return `Langkah ${o.tag} selesai${acc}${o.ms ? ' · ' + RC.fmtDur(o.ms) : ''}.`;
       case 'incomplete': return `Langkah ${o.tag} belum lengkap, kurang: ${(o.missing || []).join(', ')}`;
       case 'wait-limit': return `Semua akun limit. Lanjut otomatis jam ${atShort(o.until)}.`;
       case 'no-account': return 'Tidak ada akun yang bisa dipakai. Cek login akun.';
       case 'chat-del': return `Chat lama dihapus${acc}.`;
       case 'chat-del-fail': return `Gagal menghapus chat lama${acc} (percobaan ${o.try}).`;
       case 'cancelled': return 'Dibatalkan.';
-      case 'done': return 'Proyek selesai.';
+      case 'done': return `Proyek selesai${o.total ? ` · total ${RC.fmtDur(o.total)} (kerja ${RC.fmtDur(o.work)}${o.wait >= 1000 ? ', tunggu limit ' + RC.fmtDur(o.wait) : ''})` : ''}.`;
       case 'failed': return 'Gagal: ' + (o.msg || '');
       case 'error': return 'Error: ' + (o.msg || '');
       case 'result': {
         if (o.state === 'limit') return `Akun ${shortName(o.account || '')} kena limit. Pindah ke akun berikutnya.`;
         if (o.state === 'loggedout') return `Akun ${shortName(o.account || '')} belum login. Dilewati.`;
         if (o.state === 'fail') return `Gagal di ${shortName(o.account || '')}${o.why ? ': ' + o.why : ''}.`;
-        return `Balasan dari ${shortName(o.account || '')}: ${o.chars} karakter${o.timedOut ? ' (waktu habis)' : ''}.`;
+        return `Balasan dari ${shortName(o.account || '')}: ${o.chars} karakter${o.ms ? ' · ' + RC.fmtDur(o.ms) : ''}${o.timedOut ? ' (waktu habis)' : ''}.`;
       }
       default: return null;
     }
@@ -165,7 +165,8 @@
     const total = job && job.plan ? job.plan.steps.length : 0;
     const done = job && job.plan ? job.plan.steps.filter((s) => (job.steps[s.id] || {}).status === 'done').length : 0;
     barEl.firstChild.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
-    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}` : (rready() ? '' : 'Butuh APK terbaru');
+    const tv = job ? RC.timerView(job, Date.now()) : null;
+    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}${tv ? ` · ⏱ ${RC.fmtDur(tv.total)}` : ''}` : (rready() ? '' : 'Butuh APK terbaru');
   }
 
   function onAct() {
@@ -190,6 +191,8 @@
       )] : []),
       el('div', { class: 'rbtns' },
         el('button', { type: 'button', class: 'btn-g rb', text: '🔬 Uji chat', onclick: () => { m.remove(); r.dumpForm(); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: '🧪 Uji file', onclick: () => { m.remove(); r.transferForm(); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: '⚙ Pengaturan', onclick: () => { m.remove(); r.settingsForm(); } }),
         el('button', { type: 'button', class: 'btn-g rb', text: 'Tutup', onclick: () => m.remove() }),
       ),
     );
@@ -270,8 +273,8 @@
 
   async function exportOne(path) {
     try {
-      const r = await window.Relay.fs.read(jp('Out/' + path));
-      if (r == null) throw new Error('file tidak ada');
+      const have = (await window.Relay.fs.list(jp('Out'))).some((f) => f.path === path);
+      if (!have) throw new Error('file tidak ada');
       const x = (typeof P !== 'undefined' && P.GeckoBrowser) || null;
       if (x && x.projExport) {
         const res = await x.projExport({ path: jp('Out/' + path), name: `${curName}__${path.replace(/\//g, '__')}` });
@@ -369,6 +372,7 @@
     const info = [];
     if (j.plan) info.push(`Langkah ${done}/${total}${cur ? ` · berikutnya: ${cur.title}` : ''}`);
     else info.push('Rencana belum dibuat');
+    info.push(...RC.timeLines(j, Date.now()));
     if (j.lastAccount) info.push(`Akun terakhir: ${shortName(j.lastAccount)}`);
     if (j.error && j.status !== 'done') info.push(j.error);
     const run = !!(R() && R().isRunning && R().isRunning(j.name));
