@@ -3,9 +3,9 @@
 (function (root) {
   'use strict';
 
-  const MAX_STEPS = 12;
-  const MAX_OUTPUTS = 4;          // file per langkah
-  const NEEDS_BUDGET = 60000;     // karakter: batas isi file Out yang disertakan di prompt satu langkah
+  const MAX_STEPS = 10;           // tahap per proyek (bawaan; bisa diatur di pengaturan estafet)
+  const HARD_MAX_STEPS = 30;
+  const MAX_ATTACH = 4;           // lampiran zip per tahap (batas claude.ai 20 file; dibuat kecil supaya hemat)
   const SUMMARY_MAX = 1500;
   const IN_BUDGET = 30000;        // karakter: batas isi file Input yang disertakan di prompt
   const BRIEF_MAX = 12000;
@@ -77,27 +77,25 @@
     return bs.length ? bs[bs.length - 1].content.trim().slice(0, 1500) : '';
   }
 
-  // ---------- Rencana ----------
-  // Balasan langkah 0 harus memuat satu blok ```json berisi {summary, steps:[{title, instructions, outputs, needs}]}
-  // Cadangan kalau blok kode tidak terbaca (pagar ``` hilang, bahasa blok aneh, dsb.): cari objek JSON berisi "steps" langsung di teks
+  // ---------- Tahap ----------
+  const stageName = (i) => 'stage_' + String(i + 1).padStart(2, '0') + '.zip';   // i = indeks 0
+  const clampSteps = (n) => Math.max(1, Math.min(HARD_MAX_STEPS, Math.floor(Number(n)) || MAX_STEPS));
+
+  // Balasan langkah 0 harus memuat satu blok ```json berisi {summary, steps:[{title, instructions}]}
+  // Cadangan kalau blok kode tidak terbaca: cari objek JSON berisi "steps" langsung di teks
   function findJsonWithSteps(text) {
     const s = String(text || '');
     let tried = 0;
     for (let i = s.indexOf('{'); i >= 0 && tried < 60; i = s.indexOf('{', i + 1)) {
       tried++;
-      let depth = 0;
-      let inStr = false;
-      let esc = false;
+      let depth = 0, inStr = false, esc = false;
       for (let k = i; k < s.length; k++) {
         const c = s[k];
         if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
         if (c === '"') inStr = true;
         else if (c === '{') depth++;
         else if (c === '}' && --depth === 0) {
-          try {
-            const j = JSON.parse(s.slice(i, k + 1));
-            if (j && Array.isArray(j.steps)) return j;
-          } catch (_) { /* bukan objek yang dicari */ }
+          try { const j = JSON.parse(s.slice(i, k + 1)); if (j && Array.isArray(j.steps)) return j; } catch (_) { /* bukan objek yang dicari */ }
           break;
         }
       }
@@ -105,7 +103,9 @@
     return null;
   }
 
-  function parsePlan(md) {
+  // Tiap tahap otomatis menghasilkan SATU zip kumulatif: stage_NN.zip (isi proyek sampai tahap itu). Tahap N hanya melampirkan stage_(N-1).zip.
+  function parsePlan(md, maxSteps) {
+    const max = clampSteps(maxSteps || MAX_STEPS);
     const blocks = extractBlocks(md).filter((b) => b.complete);
     let raw = null;
     let err = 'tidak ada JSON rencana di balasan';
@@ -119,72 +119,125 @@
     }
     if (!raw) raw = findJsonWithSteps(md);
     if (!raw) return { ok: false, err };
-    if (!raw.steps.length) return { ok: false, err: 'daftar langkah kosong' };
-    if (raw.steps.length > MAX_STEPS) return { ok: false, err: `terlalu banyak langkah (${raw.steps.length}, maksimal ${MAX_STEPS})` };
-    const steps = [];
-    const allOutputs = new Set();
-    for (let i = 0; i < raw.steps.length; i++) {
-      const s = raw.steps[i] || {};
-      const outputs = [...new Set((Array.isArray(s.outputs) ? s.outputs : []).map(safePath).filter(Boolean))];
-      if (!outputs.length) return { ok: false, err: `langkah ${i + 1} tidak punya file hasil yang valid` };
-      if (outputs.length > MAX_OUTPUTS) return { ok: false, err: `langkah ${i + 1} punya ${outputs.length} file (maksimal ${MAX_OUTPUTS})` };
-      const dup = outputs.find((o) => allOutputs.has(o));
-      if (dup) return { ok: false, err: `file "${dup}" muncul di dua langkah` };
-      // needs hanya boleh menunjuk file dari langkah sebelumnya
-      const needs = [...new Set((Array.isArray(s.needs) ? s.needs : []).map(safePath).filter((p) => p && allOutputs.has(p)))];
-      outputs.forEach((o) => allOutputs.add(o));
-      steps.push({
+    if (!raw.steps.length) return { ok: false, err: 'daftar tahap kosong' };
+    if (raw.steps.length > max) return { ok: false, err: `terlalu banyak tahap (${raw.steps.length}, maksimal ${max})` };
+    const steps = raw.steps.map((s, i) => {
+      s = s || {};
+      return {
         id: 's' + (i + 1),
-        title: String(s.title || `Langkah ${i + 1}`).trim().slice(0, 80),
+        title: String(s.title || `Tahap ${i + 1}`).trim().slice(0, 80),
         instructions: String(s.instructions || s.title || '').trim().slice(0, 2500),
-        outputs,
-        needs,
-      });
-    }
+        zip: stageName(i),
+      };
+    });
     return { ok: true, plan: { summary: String(raw.summary || '').trim().slice(0, SUMMARY_MAX), steps } };
   }
 
+  // Ganti satu tahap dengan beberapa tahap lebih kecil. Total tahap tidak boleh melebihi max. Tahap setelahnya dinomori ulang (zip lama belum ada, jadi aman).
+  function applySplit(plan, stepIndex, md, maxSteps) {
+    const max = clampSteps(maxSteps || MAX_STEPS);
+    const r = parsePlan(md, HARD_MAX_STEPS);
+    if (!r.ok) return r;
+    const total = plan.steps.length - 1 + r.plan.steps.length;
+    if (total > max) return { ok: false, err: `hasil pecahan membuat total ${total} tahap (maksimal ${max})` };
+    const raw = plan.steps.slice(0, stepIndex).concat(r.plan.steps, plan.steps.slice(stepIndex + 1));
+    const steps = raw.map((s, i) => Object.assign({}, s, { id: 's' + (i + 1), zip: stageName(i) }));
+    return { ok: true, plan: Object.assign({}, plan, { steps }) };
+  }
+
+  // ---------- Pengukuran jatah akun ----------
+  // stats = { runs: [{acc, done, limited}] }: berapa tahap selesai oleh satu akun berturut-turut sebelum limit.
+  function measure(stats) {
+    const runs = ((stats && stats.runs) || []).filter((r) => r.limited);
+    if (!runs.length) return { known: false, avg: 0, n: 0 };
+    const avg = runs.reduce((s, r) => s + r.done, 0) / runs.length;
+    return { known: true, avg, n: runs.length };
+  }
+  function budgetHint(stats) {
+    const m = measure(stats);
+    if (!m.known) return '';
+    if (m.avg < 1) return 'CATATAN JATAH: akun-akun sebelumnya kehabisan jatah sebelum satu tahap selesai. Kerjakan tahap ini SEHEMAT mungkin: kode ringkas, jangan jalankan banyak percobaan, jangan menjelaskan panjang.';
+    return `CATATAN JATAH: rata-rata satu akun menyelesaikan sekitar ${m.avg.toFixed(1)} tahap sebelum limit. Tetap hemat: jangan menjalankan perintah yang tidak perlu.`;
+  }
+  // Aturan anti-buang akun: tahap yang sama gagal tanpa hasil di 2 akun BERBEDA berturut-turut -> berhenti.
+  function shouldStopStage(failAccounts) {
+    const f = failAccounts || [];
+    return f.length >= 2 && f[f.length - 1] !== f[f.length - 2];
+  }
+
   // ---------- Prompt ----------
-  const OUTPUT_RULES = [
-    'ATURAN KELUARAN (wajib):',
-    '- Jangan menjalankan perintah, jangan membuat file di sandbox, jangan memakai artifact. Tulis semuanya langsung di jawaban ini.',
-    '- Tiap file ditulis LENGKAP (tidak boleh dipotong, tidak boleh "sisanya sama"). Format: satu baris `FILE: path/relatif.ext`, tepat di bawahnya satu blok kode berisi seluruh isi file.',
-    '- Tulis hanya file yang diminta langkah ini. Jangan tulis file lain.',
-    '- Akhiri jawaban dengan satu blok kode berbahasa `state` (maksimal 8 baris): keputusan penting dan hal yang perlu diketahui langkah berikutnya.',
+  const MODEL_RULES = [
+    'ATURAN MODEL KARAKTER (.pmx / .vrm / FBX):',
+    '- Model asli TIDAK diunggah ke chat dan kamu TIDAK membuat model karakter. Kode membaca model dari `public/model/` lewat `public/model/model.json` (mendukung `.vrm` dan `.pmx`).',
+    '- Kalau file model tidak ada, kode memakai placeholder mannequin sederhana, sehingga `tsc` tetap lolos tanpa model asli.',
+    '- Sediakan `src/rigMap.ts` (pemetaan nama bone) dan `src/expressionMap.ts` (pemetaan morph / ekspresi), plus composition `PoseDebug`.',
+    '- Kalau kamu butuh nama bone/morph yang sebenarnya, minta saja pemilik proyek menempelkan daftar namanya sebagai teks kecil. Jangan minta file model.',
   ].join('\n');
 
-  function buildPlanPrompt(brief, inFiles) {
+  function stageRules(zip, prevZip) {
+    return [
+      'ATURAN TAHAP (wajib):',
+      '- Kamu BOLEH memakai sandbox / menjalankan perintah (kode, tsc, tes).',
+      prevZip
+        ? `- Lampiran chat ini: \`${prevZip}\` = isi proyek sampai tahap sebelumnya. Ekstrak dulu ke folder kerja, lanjutkan dari situ, jangan menulis ulang dari nol.`
+        : '- Ini tahap pertama: mulai dari kosong (kecuali ada lampiran dari pemilik proyek).',
+      `- Hasil akhir tahap ini = SATU file zip bernama persis \`${zip}\` di /mnt/user-data/outputs/, berisi SELURUH proyek sampai tahap ini (kumulatif), dengan struktur folder proyek di akar zip.`,
+      '- Jangan masukkan: node_modules, out/, dist/, build/, file video, dan model biner (.glb .pmx .vrm .fbx). Usahakan zip di bawah 25 MB.',
+      `- Setelah zip jadi, tampilkan sebagai file yang bisa diunduh (present_files) dan jangan menulis zip lain.`,
+      '- Akhiri jawaban dengan satu blok kode berbahasa `state` (maksimal 8 baris): keputusan penting dan hal yang perlu diketahui tahap berikutnya.',
+    ].join('\n');
+  }
+
+  function buildPlanPrompt(brief, inFiles, opts) {
+    const o = opts || {};
+    const max = clampSteps(o.maxSteps || MAX_STEPS);
     const b = String(brief || '').trim().slice(0, BRIEF_MAX);
     const files = (inFiles || []).map((f) => `### ${f.path}\n${f.content}`).join('\n\n');
     return [
-      'Kamu akan mengerjakan proyek di bawah ini, tetapi pekerjaannya dibagi menjadi langkah-langkah kecil yang dikerjakan di chat terpisah (kadang oleh akun berbeda yang tidak tahu apa-apa soal chat ini).',
+      'Kamu akan mengerjakan proyek di bawah ini, tetapi pekerjaannya dibagi menjadi TAHAP kecil yang dikerjakan di chat terpisah (kadang oleh akun berbeda yang tidak tahu apa-apa soal chat ini). Tiap tahap menghasilkan satu zip kumulatif.',
       'SEKARANG JANGAN MENGERJAKAN APA PUN. Hanya buat rencana.',
       '',
       'PROYEK:',
       b,
       files ? '\nLAMPIRAN:\n' + files : '',
       '',
+      MODEL_RULES,
+      '',
       'Balas dengan SATU blok kode berbahasa `json` berisi persis bentuk ini, tanpa tulisan lain di luar blok:',
       '```json',
       '{',
-      '  "summary": "ringkasan proyek, tujuan, teknologi, dan aturan penting (maksimal 1200 karakter), cukup untuk dipahami orang yang belum melihat apa pun",',
+      '  "summary": "ringkasan proyek, tujuan, teknologi, struktur folder, dan aturan penting (maksimal 1200 karakter), cukup untuk dipahami orang yang belum melihat apa pun",',
       '  "steps": [',
-      '    { "title": "judul pendek", "instructions": "apa yang harus dikerjakan di langkah ini, rinci dan mandiri", "outputs": ["src/contoh.js"], "needs": [] }',
+      '    { "title": "judul pendek", "instructions": "apa yang harus dikerjakan di tahap ini, rinci dan mandiri" }',
       '  ]',
       '}',
       '```',
       'Syarat rencana:',
-      `- Maksimal ${MAX_STEPS} langkah. Tiap langkah menghasilkan 1 sampai ${MAX_OUTPUTS} file teks (kode atau dokumen), tiap file idealnya di bawah 300 baris.`,
-      '- "outputs" = path relatif file yang dihasilkan langkah itu. Satu file hanya boleh ada di satu langkah.',
-      '- "needs" = file hasil LANGKAH SEBELUMNYA yang benar-benar harus dibaca untuk mengerjakan langkah ini (kosongkan kalau tidak perlu). Semakin sedikit semakin baik.',
-      '- Hanya file teks. Jangan merencanakan gambar, video, atau file biner. Render atau build dilakukan di luar chat.',
+      `- Maksimal ${max} tahap. Tahap 1 = kerangka proyek + timing. Lalu satu scene 3D per tahap, satu scene 2D per tahap, dan seterusnya.`,
+      '- Tiap tahap HARUS kecil: cukup dikerjakan dalam satu chat pendek (beberapa file, tanpa riset panjang). Lebih baik tahap kecil dan banyak daripada tahap besar.',
+      '- Tiap tahap mengubah proyek yang sama dan menghasilkan satu zip kumulatif; jangan merencanakan nama file zip, aplikasi yang menentukan.',
+      '- Jangan merencanakan render video atau pembuatan model karakter. Render dilakukan di luar chat.',
+      o.hint ? '\n' + o.hint : '',
     ].filter((x) => x !== '').join('\n');
   }
 
-  // Prompt satu langkah. Berisi paket serah-terima: ringkasan proyek, daftar progres, file yang dibutuhkan, lalu instruksi langkah.
-  // got = path hasil yang sudah ada untuk langkah ini (dari percobaan sebelumnya): tidak ditulis ulang.
+  function buildSplitPrompt(plan, index, why, maxNew) {
+    const s = plan.steps[index];
+    return [
+      'Sebuah tahap proyek terlalu besar: dua chat berturut-turut kehabisan jatah sebelum selesai. SEKARANG JANGAN MENGERJAKAN APA PUN. Pecah tahap ini menjadi beberapa tahap yang jauh lebih kecil.',
+      '',
+      'RINGKASAN PROYEK:', plan.summary,
+      '',
+      `TAHAP YANG DIPECAH: ${s.title}`, s.instructions,
+      why ? '\nCatatan kegagalan: ' + why : '',
+      '',
+      `Balas dengan SATU blok kode \`json\` bentuk {"summary": "", "steps": [{"title": "", "instructions": ""}]} berisi 2 sampai ${maxNew} tahap pengganti saja (bukan seluruh proyek). Tidak ada tulisan lain.`,
+    ].filter((x) => x !== '').join('\n');
+  }
+
+  // Prompt satu tahap: paket serah-terima (ringkasan, progres, aturan). Berkas lama dilampirkan sebagai zip, bukan ditempel.
   function buildStepPrompt(o) {
-    const { plan, step, index, progress, needFiles, got, brief, inFiles } = o;
+    const { plan, step, index, progress, brief, inFiles, prevZip, hint } = o;
     let inUsed = 0;
     const ins = [];
     for (const f of inFiles || []) {
@@ -192,34 +245,23 @@
       inUsed += f.content.length;
       ins.push(`### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``);
     }
-    const missing = step.outputs.filter((p) => !(got || []).includes(p));
-    let used = 0;
-    const needs = [];
-    const skipped = [];
-    for (const f of needFiles || []) {
-      if (used + f.content.length > NEEDS_BUDGET) { skipped.push(f.path); continue; }
-      used += f.content.length;
-      needs.push(`### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``);
-    }
     return [
-      `Kamu melanjutkan proyek yang dikerjakan bertahap. Ini langkah ${index + 1} dari ${plan.steps.length}. Kamu belum pernah melihat chat sebelumnya, semua yang perlu diketahui ada di bawah.`,
+      `Kamu melanjutkan proyek yang dikerjakan bertahap. Ini tahap ${index + 1} dari ${plan.steps.length}. Kamu belum pernah melihat chat sebelumnya, semua yang perlu diketahui ada di bawah.`,
       '',
       'RINGKASAN PROYEK:',
       plan.summary || String(brief || '').slice(0, SUMMARY_MAX),
       '',
       'PROGRES SAAT INI:',
       progress,
-      ins.length ? '\nFILE LAMPIRAN PROYEK (dari pemilik proyek):\n' + ins.join('\n\n') : '',
-      needs.length ? '\nFILE HASIL LANGKAH SEBELUMNYA YANG KAMU BUTUHKAN:\n' + needs.join('\n\n') : '',
-      skipped.length ? `\n(File ini terlalu besar untuk disertakan dan tidak perlu dibaca ulang: ${skipped.join(', ')})` : '',
+      ins.length ? '\nCATATAN DARI PEMILIK PROYEK:\n' + ins.join('\n\n') : '',
       '',
-      `TUGAS LANGKAH INI: ${step.title}`,
+      `TUGAS TAHAP INI: ${step.title}`,
       step.instructions,
       '',
-      `File yang harus kamu tulis: ${missing.map((p) => '`' + p + '`').join(', ')}`,
-      (got || []).length ? `File ini sudah selesai dan TIDAK boleh ditulis ulang: ${got.join(', ')}` : '',
+      MODEL_RULES,
       '',
-      OUTPUT_RULES,
+      stageRules(step.zip, prevZip),
+      hint ? '\n' + hint : '',
     ].filter((x) => x !== '').join('\n');
   }
 
@@ -231,11 +273,11 @@
     for (const s of plan.steps) {
       const st = stepState[s.id] || {};
       const mark = st.status === 'done' ? '[x]' : '[ ]';
-      lines.push(`- ${mark} ${s.id} ${s.title} — file: ${s.outputs.join(', ')}`);
+      lines.push(`- ${mark} ${s.id} ${s.title} — zip: ${s.zip}`);
     }
     const notes = plan.steps.filter((s) => (stepState[s.id] || {}).note);
     if (notes.length) {
-      lines.push('', '## Catatan dari langkah selesai');
+      lines.push('', '## Catatan dari tahap selesai');
       for (const s of notes) lines.push(`- ${s.id}: ${stepState[s.id].note.replace(/\n+/g, ' / ')}`);
     }
     return lines.join('\n');
@@ -243,8 +285,7 @@
 
   // ---------- Akun ----------
   // Pilih akun berikutnya dari pool (urutan = prioritas). Akun Limit yang jam resetnya sudah lewat dianggap bisa dipakai.
-  // skip = Set id akun yang dilewati untuk putaran ini (belum login, gagal berulang).
-  // Hasil: {account} | {wait: ms-epoch jam reset paling awal} | {none: true}
+  // skip = Set id akun yang dilewati untuk putaran ini. Hasil: {account} | {wait: ms-epoch jam reset paling awal} | {none: true}
   function pickAccount(accounts, pool, now, skip) {
     let earliest = 0;
     for (const id of pool) {
@@ -260,7 +301,58 @@
     return earliest ? { wait: earliest } : { none: true };
   }
 
-  const api = { safePath, safeName, extractBlocks, extractFiles, extractState, parsePlan, buildPlanPrompt, buildStepPrompt, buildProgress, pickAccount, OUTPUT_RULES, MAX_STEPS };
+  // ---------- Timer ----------
+  // job.timer = { firstAt, lastAt, endAt, workMs, waitMs, mode: 'work'|'wait'|'', since }
+  //   work = status running (kirim prompt, Claude bekerja). wait = menunggu reset limit / syarat Wi-Fi-charging.
+  //   Status lain (queued, failed, cancelled) tidak dihitung ke work/wait. Total = dari mulai pertama sampai selesai (atau aktivitas terakhir).
+  // Dipanggil tiap job disimpan (saveJob): menutup segmen lama, membuka segmen sesuai status baru.
+  function timerTick(job, now) {
+    const t = job.timer = job.timer || { firstAt: 0, lastAt: 0, endAt: 0, workMs: 0, waitMs: 0, mode: '', since: 0 };
+    if (t.mode && t.since) {
+      const d = Math.max(0, now - t.since);
+      if (t.mode === 'work') t.workMs += d; else t.waitMs += d;
+    }
+    const s = job.status;
+    const m = s === 'running' ? 'work' : (s === 'waiting_limit' || s === 'waiting_cond') ? 'wait' : '';
+    if (m && !t.firstAt) t.firstAt = now;
+    t.mode = m; t.since = m ? now : 0; t.lastAt = now;
+    if (s === 'done') { if (!t.endAt) t.endAt = now; } else t.endAt = 0;
+    return t;
+  }
+  // Angka untuk ditampilkan (termasuk segmen yang sedang jalan). null = belum pernah mulai.
+  function timerView(job, now) {
+    const t = job && job.timer;
+    if (!t || !t.firstAt) return null;
+    let work = t.workMs || 0, wait = t.waitMs || 0;
+    if (t.mode && t.since) {
+      const d = Math.max(0, now - t.since);
+      if (t.mode === 'work') work += d; else wait += d;
+    }
+    const end = t.endAt || (t.mode ? now : t.lastAt) || now;
+    return { work, wait, total: Math.max(0, end - t.firstAt), running: !!t.mode };
+  }
+  function fmtDur(ms) {
+    const s = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), d = s % 60;
+    if (h) return `${h}j ${String(m).padStart(2, '0')}m`;
+    if (m) return `${m}m ${String(d).padStart(2, '0')}d`;
+    return `${d}d`;
+  }
+  // Baris teks untuk kartu / log. Satu baris waktu + (kalau ada) satu baris rata-rata per tahap.
+  function timeLines(job, now) {
+    const v = timerView(job, now);
+    if (!v) return [];
+    const out = [`⏱ Total ${fmtDur(v.total)} · kerja ${fmtDur(v.work)}${v.wait >= 1000 ? ' · tunggu limit ' + fmtDur(v.wait) : ''}`];
+    const ms = Object.values((job && job.steps) || {}).filter((s) => s && s.status === 'done' && s.ms > 0).map((s) => s.ms);
+    if (ms.length) out.push(`⏱ Rata-rata per tahap ${fmtDur(ms.reduce((a, b) => a + b, 0) / ms.length)} (${ms.length} tahap)`);
+    return out;
+  }
+
+  const api = {
+    timerTick, timerView, fmtDur, timeLines,
+    safePath, safeName, extractBlocks, extractFiles, extractState, parsePlan, applySplit, buildPlanPrompt, buildSplitPrompt, buildStepPrompt,
+    buildProgress, pickAccount, measure, budgetHint, shouldStopStage, stageName, clampSteps, MODEL_RULES, MAX_STEPS, MAX_ATTACH,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.RelayCore = api;
 })(typeof window !== 'undefined' ? window : globalThis);
