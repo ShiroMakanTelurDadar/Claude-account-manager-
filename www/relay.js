@@ -126,6 +126,7 @@
     if (running) { toast('Ada proyek lain yang sedang berjalan.'); return; }
     const G = g();
     if (!ready()) { toast('Butuh APK versi terbaru (fitur estafet belum ada di APK ini).'); return; }
+    { const j0 = await loadJob(name); if (j0 && !j0.plan) { const b0 = await fs.read(jp(name, 'In/brief.md')); if (!b0 || b0.trim().length < 20) { toast('Tulis brief proyek di kolom chat dulu (minimal 20 karakter).', 6000); return; } } }
     if (typeof checking !== 'undefined' && (checking || (typeof resumeBusy !== 'undefined' && resumeBusy))) { toast('Tunggu pengecekan akun selesai dulu.'); return; }
     const run = { name, cancel: false };
     running = run;
@@ -322,7 +323,7 @@
   async function createProject(name, brief, pool) {
     const dirs = await fs.dirs('');
     if (dirs.includes(name)) throw new Error('Nama proyek sudah dipakai');
-    await fs.write(jp(name, 'In/brief.md'), brief);
+    if (brief) await fs.write(jp(name, 'In/brief.md'), brief);
     const job = { v: 1, name, createdAt: Date.now(), status: 'queued', pool, plan: null, steps: {}, tries: {}, raw: [], seq: 0, waitUntil: 0, error: '' };
     await saveJob(job);
     await logEv(name, 'created', { pool: pool.length });
@@ -483,42 +484,46 @@
     );
   }
 
-  function newProjectForm(prefill) {
+  // Form proyek baru: hanya judul dan akun. Brief ditulis nanti di kolom chat halaman proyek (halaman estafet), bukan di sini.
+  // Akun dipilih dengan mengetuk gelembungnya. Angka di gelembung = urutan prioritas = urutan ketukan.
+  // onCreated(nama) dipanggil setelah proyek dibuat.
+  function newProjectForm(onCreated) {
     if (!accounts.length) { toast('Tambahkan akun dulu.'); return; }
-    const nameIn = el('input', { placeholder: 'Nama proyek (huruf, angka, - atau _)', autocomplete: 'off', maxlength: '40' });
-    const briefIn = el('textarea', { rows: '7', placeholder: 'Brief proyek: apa yang mau dibuat, teknologi, aturan penting. Semakin jelas semakin baik.' });
-    if (prefill) { briefIn.value = prefill; nameIn.value = RC.safeName(prefill.split(/\s+/).slice(0, 3).join('-')) || ''; }
-    const order = accounts.map((a) => ({ a, on: a.status !== 'working' }));
+    const nameIn = el('input', { placeholder: 'Judul proyek (huruf, angka, - atau _)', autocomplete: 'off', maxlength: '40' });
+    // pool = id akun yang dicentang, urut sesuai ketukan. Awalnya semua akun yang tidak limit, urut daftar.
+    let pool = accounts.filter((a) => a.status !== 'working').map((a) => a.id);
     const poolEl = el('div', { class: 'rpool' });
     const paint = () => {
-      poolEl.replaceChildren(...order.map((o, i) => el('div', { class: 'rpick' },
-        el('label', {}, el('input', { type: 'checkbox', checked: o.on ? 'checked' : null, onchange: (e) => { o.on = e.target.checked; } }), el('span', { text: ` ${i + 1}. ${shortName(o.a.name)}${o.a.status === 'working' ? ' (limit)' : ''}` })),
-        el('span', {},
-          el('button', { type: 'button', class: 'btn-g rmv', text: '▲', onclick: () => { if (i > 0) { [order[i - 1], order[i]] = [order[i], order[i - 1]]; paint(); } } }),
-          el('button', { type: 'button', class: 'btn-g rmv', text: '▼', onclick: () => { if (i < order.length - 1) { [order[i + 1], order[i]] = [order[i], order[i + 1]]; paint(); } } }),
-        ),
-      )));
+      poolEl.replaceChildren(...accounts.map((a) => {
+        const i = pool.indexOf(a.id);
+        const on = i >= 0;
+        return el('button', {
+          type: 'button', class: `rchip ${on ? 'on' : ''}`, 'aria-pressed': on ? 'true' : 'false',
+          onclick: () => { if (on) pool = pool.filter((x) => x !== a.id); else pool.push(a.id); paint(); },
+        },
+          el('span', { class: 'rnum', text: on ? String(i + 1) : '' }),
+          el('span', { class: 'rnm', text: shortName(a.name) + (a.status === 'working' ? ' (limit)' : '') }),
+        );
+      }));
     };
     paint();
     const errEl = el('div', { class: 'hint2 rerr' });
     const m = modal(
-      el('b', { text: 'Proyek baru' }), nameIn, briefIn,
-      el('div', { class: 'hint2', text: 'Akun yang dipakai, urutan = prioritas. Akun limit atau belum login dilewati.' }), poolEl, errEl,
+      el('b', { text: 'Proyek baru' }), nameIn,
+      el('div', { class: 'hint2', text: 'Ketuk akun yang dipakai. Angka = urutan prioritas. Akun limit atau belum login dilewati.' }), poolEl, errEl,
       el('div', { class: 'rbtns' },
         el('button', { type: 'button', class: 'btn-g rb', text: 'Batal', onclick: () => m.remove() }),
         el('button', {
           type: 'button', class: 'btn sm rb', text: 'Buat',
           onclick: async () => {
             const name = RC.safeName(nameIn.value);
-            const brief = briefIn.value.trim();
-            const pool = order.filter((o) => o.on).map((o) => o.a.id);
-            if (!name) { errEl.textContent = 'Nama proyek kosong atau tidak valid.'; return; }
-            if (brief.length < 20) { errEl.textContent = 'Brief terlalu pendek.'; return; }
+            if (!name) { errEl.textContent = 'Judul proyek kosong atau tidak valid.'; return; }
             if (!pool.length) { errEl.textContent = 'Pilih minimal satu akun.'; return; }
-            try { await createProject(name, brief, pool); } catch (e) { errEl.textContent = String((e && e.message) || e); return; }
+            try { await createProject(name, '', pool); } catch (e) { errEl.textContent = String((e && e.message) || e); return; }
             m.remove();
             await refreshJobs();
-            toast(`Proyek "${name}" dibuat. Ketuk ▶ Mulai.`);
+            toast(`Proyek "${name}" dibuat. Tulis brief di kolom chat.`, 5000);
+            if (typeof onCreated === 'function') onCreated(name);
           },
         }),
       ),
@@ -552,7 +557,7 @@
         el('button', { type: 'button', class: 'hx', text: '✕', 'aria-label': 'Tutup', onclick: closeDrawer }),
       ),
       el('div', { class: 'rbtns' },
-        el('button', { type: 'button', class: 'btn sm rb', text: '+ Proyek baru', onclick: newProjectForm }),
+        el('button', { type: 'button', class: 'btn sm rb', text: '+ Proyek baru', onclick: () => newProjectForm() }),
         el('button', { type: 'button', class: 'btn-g rb', text: '🔬 Uji chat', onclick: dumpForm }),
       ),
       listEl,
