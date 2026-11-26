@@ -94,3 +94,13 @@ html[data-theme="lite"] .cpmsg.wait { animation: none; }
 /* Log proyek di bawah List akun */
 .cpanel .caccs { max-height: 26vh; }
 .cplog { margin: 0; padding: 6px; max-height: 30vh; overflow: auto; font: 10px/1.4 monospace; white-space: pre-wrap; word-break: break-all; color: var(--muted); -webkit-user-select: text; user-select: text; }
+
+/* Daftar proyek (halaman sebelum chat proyek) */
+.projpage { grid-template-columns: minmax(0, 1fr); }
+.chatpage.cpchat { z-index: 31; }
+.cptit { display: flex; align-items: center; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cpnew { flex: none; height: 38px; padding: 0 12px; font-size: 13px; white-space: nowrap; }
+.cplist { gap: 10px; }
+.pcard { cursor: pointer; }
+.pcard:active { transform: scale(.985); }
+.cpsel.cptit { padding: 0 2px; border: 0; background: transparent; }
