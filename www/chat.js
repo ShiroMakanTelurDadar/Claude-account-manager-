@@ -68,6 +68,8 @@
       case 'incomplete': return `Langkah ${o.tag} belum lengkap, kurang: ${(o.missing || []).join(', ')}`;
       case 'wait-limit': return `Semua akun limit. Lanjut otomatis jam ${atShort(o.until)}.`;
       case 'no-account': return 'Tidak ada akun yang bisa dipakai. Cek login akun.';
+      case 'chat-del': return `Chat lama dihapus${acc}.`;
+      case 'chat-del-fail': return `Gagal menghapus chat lama${acc} (percobaan ${o.try}).`;
       case 'cancelled': return 'Dibatalkan.';
       case 'done': return 'Proyek selesai.';
       case 'failed': return 'Gagal: ' + (o.msg || '');
