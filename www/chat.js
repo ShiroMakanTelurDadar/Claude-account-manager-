@@ -1,88 +1,39 @@
-// Halaman chat: kolom chat di kiri, panel di kanan (Cek akun, Pancing akun, Input file, Output file, List akun).
-// Dibuka dari tombol "💬 Chat" di halaman utama (list akun). Tombol panah bulat di pojok kolom chat = kembali ke halaman utama.
+// Halaman estafet: kolom chat di kiri (alur proyek: brief, rencana, tiap langkah, balasan Claude), panel di kanan
+// (Cek akun, Pancing akun, Input file, Output file, List akun). Dibuka dengan geser ke kiri di halaman utama (list akun).
+// Panah bulat di pojok kolom chat, atau geser ke kanan dari tepi kiri, = kembali ke halaman utama.
 //
-// Pesan dikirim lewat sesi tersembunyi (GeckoBrowser.bait mode "work", sama seperti estafet) memakai akun yang dipilih di List akun.
-//   Pesan pertama membuka chat baru di claude.ai, pesan berikutnya memakai alamat chat yang sama (percakapan nyambung).
-//   Input file : file teks dari perangkat, ikut terkirim sebagai blok "FILE: nama" di pesan berikutnya.
-//   Output file: blok "FILE: path" + kode di balasan Claude disimpan otomatis, bisa disalin ke folder Download.
-// Penyimpanan file: <app files>/Projects/_chat/{In,Out} (awalan "_" = tidak muncul di daftar proyek estafet).
+// Halaman ini hanya tampilan. Semua kerja estafet (rencana, langkah, ganti akun saat limit) tetap di relay.js, lewat window.Relay.
+//   Kolom chat  : dibangun dari In/brief.md, State/log.jsonl, dan balasan mentah State/raw/*.md proyek yang dipilih.
+//   Kotak ketik : tulis brief proyek baru, lalu ➤ membuka form proyek baru (nama + akun) dengan brief itu sudah terisi.
+//   Input file  : file teks di In/ proyek (selain brief.md). Ikut ke prompt rencana dan tiap langkah.
+//   Output file : file hasil di Out/ proyek. ⬇ menyalin ke folder Download.
+//   List akun   : semua akun. Yang bernomor = ada di pool proyek (urutan = prioritas). Ketuk = masuk / keluar pool (saat proyek tidak berjalan).
 (function () {
   'use strict';
   const RC = window.RelayCore;
-  const g = () => (typeof P !== 'undefined' && P.GeckoBrowser) || null;
-  const hasNative = () => { const G = g(); return !!(typeof native !== 'undefined' && native && G && G.bait && G.projWrite); };
+  const R = () => window.Relay || null;
+  const rready = () => { const r = R(); return !!(r && r.ready && r.ready()); };
 
-  const ROOT = '_chat';
-  const WORK_TIMEOUT = 10 * 60 * 1000;   // ms: batas satu balasan
-  const MAX_FILE = 300 * 1024;           // byte: batas ukuran satu file input
-  const MAX_MSGS = 60;                   // pesan yang disimpan per akun
-  const FILE_HINT = 'Kalau kamu menulis file, tulis tiap file LENGKAP: satu baris `FILE: path/relatif.ext` lalu satu blok kode berisi seluruh isi file. Jangan pakai sandbox atau artifact.';
+  const MAX_FILE = 300 * 1024;    // byte: batas ukuran satu file input
+  const LOG_SHOW = 150;           // jumlah catatan log terakhir yang ditampilkan di kolom chat
 
-  // ---------- Penyimpanan file (native; cadangan localStorage supaya tampilan bisa dicoba di browser biasa) ----------
-  const lsKey = (p) => 'camchat:' + p;
-  const fs = {
-    async write(path, content) {
-      if (hasNative()) { await g().projWrite({ path, content, append: false }); return; }
-      try { localStorage.setItem(lsKey(path), content); } catch (_) {}
-    },
-    async read(path) {
-      if (hasNative()) { const r = await g().projRead({ path }); return r && r.exists ? r.content : null; }
-      try { return localStorage.getItem(lsKey(path)); } catch (_) { return null; }
-    },
-    async list(dir) {
-      if (hasNative()) { const r = await g().projList({ path: dir }); return ((r && r.items) || []).map((x) => (typeof x === 'string' ? { path: x } : x)); }
-      const pre = lsKey(dir + '/');
-      const out = [];
-      try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(pre)) out.push({ path: k.slice(pre.length) }); } } catch (_) {}
-      return out;
-    },
-    async del(path) {
-      if (hasNative()) { await g().projDelete({ path }); return; }
-      try { localStorage.removeItem(lsKey(path)); } catch (_) {}
-    },
-    async exp(path, name) {
-      if (hasNative() && g().projExport) { return g().projExport({ path, name }); }
-      const c = await fs.read(path);
-      if (c == null) throw new Error('file tidak ada');
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([c], { type: 'text/plain' }));
-      a.download = name;
-      a.click();
-      return { where: 'Download/' + name };
-    },
-  };
-
-  // ---------- Riwayat percakapan per akun ----------
-  const convs = new Map();   // id akun -> { url, msgs: [{role:'user'|'ai'|'sys', text}] }
-  const convKey = (id) => (window.Auth && Auth.key ? Auth.key('chat_' + id) : 'chat_' + id);
-  function conv(id) {
-    if (convs.has(id)) return convs.get(id);
-    let c = null;
-    try { c = JSON.parse(localStorage.getItem(convKey(id)) || 'null'); } catch (_) {}
-    if (!c || !Array.isArray(c.msgs)) c = { url: '', msgs: [] };
-    convs.set(id, c);
-    return c;
-  }
-  function saveConv(id) {
-    const c = conv(id);
-    if (c.msgs.length > MAX_MSGS) c.msgs = c.msgs.slice(-MAX_MSGS);
-    try { localStorage.setItem(convKey(id), JSON.stringify(c)); } catch (_) {}
-  }
-
-  // ---------- Keadaan tampilan ----------
+  // ---------- Keadaan ----------
   let page = null;
-  let selId = null;
-  let sending = null;        // id akun yang sedang menunggu balasan
-  let msgsEl = null, inputEl = null, sendBtn = null, whoEl = null;
-  let inEl = null, outEl = null, accEl = null, fileIn = null;
+  let curName = '';          // nama proyek yang dipilih
+  let job = null;            // job.json proyek itu (salinan terbaru)
+  let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
   let timer = null;
-  let inFiles = [];          // [{path, on}]
-  let outFiles = [];         // [{path}]
-  const off = new Set();     // file input yang tidak dicentang (tidak ikut terkirim)
+  let selEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
+  let msgsEl = null, inputEl = null, sendBtn = null;
+  let inEl = null, outEl = null, accEl = null, fileIn = null, logEl = null;
+  let logText = '', logMark = '';
+  let inFiles = [], outFiles = [];
 
-  const sel = () => (typeof accounts !== 'undefined' ? accounts : []).find((a) => a.id === selId) || null;
-  const isLimit = (a) => a.status === 'working';
   const name = (a) => (typeof shortName === 'function' ? shortName(a.name) : a.name);
+  const accs = () => (typeof accounts !== 'undefined' ? accounts : []);
+  const jp = (rest) => `${curName}/${rest}`;
+  const running = () => !!(R() && R().isRunning && R().isRunning(curName));
+  const hhmm = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
   // ---------- Isi pesan: teks + blok kode (tanpa innerHTML) ----------
   function fillBody(box, text) {
@@ -99,219 +50,156 @@
     });
     if (!box.childNodes.length) box.append(el('div', { class: 'cmtext', text: '' }));
   }
+  const bubble = (role, text) => { const b = el('div', { class: `cpmsg ${role}` }); fillBody(b, text); return b; };
 
-  function renderMsgs() {
-    if (!msgsEl) return;
-    const a = sel();
-    const stick = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 80;
-    if (!a) { msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Pilih akun di List akun.' })); return; }
-    const c = conv(a.id);
-    const kids = c.msgs.map((m) => {
-      const b = el('div', { class: `cpmsg ${m.role}` });
-      fillBody(b, m.text);
-      return b;
-    });
-    if (sending === a.id) kids.push(el('div', { class: 'cpmsg ai wait', text: 'Claude sedang menjawab...' }));
-    if (!kids.length) kids.push(el('div', { class: 'cmempty', text: `Chat dengan ${name(a)}.\nKetik pesan di bawah.` }));
-    msgsEl.replaceChildren(...kids);
-    if (stick || sending) msgsEl.scrollTop = msgsEl.scrollHeight;
+  // ---------- Kolom chat: alur proyek ----------
+  // Satu baris log -> kalimat singkat. null = tidak ditampilkan.
+  function logLine(o) {
+    const acc = o.account ? ` (${shortName(o.account)})` : '';
+    switch (o.ev) {
+      case 'created': return 'Proyek dibuat.';
+      case 'start': return `Mulai. Akun di pool: ${o.pool}.`;
+      case 'send': return `${o.tag === 'plan' ? 'Meminta rencana' : 'Mengirim langkah ' + o.tag} ke ${shortName(o.account || '')}...`;
+      case 'plan': return `Rencana siap: ${o.steps} langkah.`;
+      case 'plan-bad': return `Rencana belum valid (${o.err || ''}), diulang. Percobaan ${o.try}.`;
+      case 'files': return `${o.saved} file disimpan (${o.got}/${o.of}).`;
+      case 'step-done': return `Langkah ${o.tag} selesai${acc}.`;
+      case 'incomplete': return `Langkah ${o.tag} belum lengkap, kurang: ${(o.missing || []).join(', ')}`;
+      case 'wait-limit': return `Semua akun limit. Lanjut otomatis jam ${atShort(o.until)}.`;
+      case 'no-account': return 'Tidak ada akun yang bisa dipakai. Cek login akun.';
+      case 'cancelled': return 'Dibatalkan.';
+      case 'done': return 'Proyek selesai.';
+      case 'failed': return 'Gagal: ' + (o.msg || '');
+      case 'error': return 'Error: ' + (o.msg || '');
+      case 'result': {
+        if (o.state === 'limit') return `Akun ${shortName(o.account || '')} kena limit. Pindah ke akun berikutnya.`;
+        if (o.state === 'loggedout') return `Akun ${shortName(o.account || '')} belum login. Dilewati.`;
+        if (o.state === 'fail') return `Gagal di ${shortName(o.account || '')}${o.why ? ': ' + o.why : ''}.`;
+        return `Balasan dari ${shortName(o.account || '')}: ${o.chars} karakter${o.timedOut ? ' (waktu habis)' : ''}.`;
+      }
+      default: return null;
+    }
   }
 
-  // ---------- Panel kanan ----------
-  async function refreshFiles() {
-    try {
-      inFiles = (await fs.list(ROOT + '/In')).map((f) => ({ path: f.path, on: !off.has(f.path) }));
-      outFiles = await fs.list(ROOT + '/Out');
-    } catch (_) { inFiles = []; outFiles = []; }
-    renderFiles();
-  }
+  async function buildTimeline() {
+    const r = R();
+    const fs = r.fs;
+    const [brief, logTxt] = await Promise.all([fs.read(jp('In/brief.md')), fs.read(jp('State/log.jsonl'))]);
+    const evs = [];
+    for (const l of String(logTxt || '').split('\n')) { if (!l) continue; try { evs.push(JSON.parse(l)); } catch (_) {} }
+    // Penanda perubahan: panjang log + status + jumlah balasan
+    const mark = `${curName}|${evs.length}|${job && job.status}|${job && job.seq}|${running() ? 1 : 0}`;
+    if (mark === timeline) return null;
+    timeline = mark;
 
-  function fileRow(f, kind) {
-    const nm = el('span', { class: 'cfname', text: f.path, title: f.path });
     const kids = [];
-    if (kind === 'in') {
-      kids.push(el('input', { type: 'checkbox', checked: f.on ? 'checked' : null, 'aria-label': 'Ikut terkirim', onchange: (e) => { if (e.target.checked) off.delete(f.path); else off.add(f.path); } }));
+    if (brief) kids.push(bubble('user', brief));
+    if (job && job.plan) {
+      const lines = job.plan.steps.map((s, i) => `${(job.steps[s.id] || {}).status === 'done' ? '✓' : '○'} ${i + 1}. ${s.title}  →  ${s.outputs.join(', ')}`);
+      kids.push(bubble('ai plan', 'Rencana:\n' + lines.join('\n')));
     }
-    kids.push(nm);
-    if (kind === 'out') kids.push(el('button', { type: 'button', class: 'cfbtn', text: '⬇', 'aria-label': 'Salin ke Download', onclick: () => exportOut(f.path) }));
-    kids.push(el('button', { type: 'button', class: 'cfbtn', text: '✕', 'aria-label': 'Hapus', onclick: () => delFile(kind, f.path) }));
-    return el('div', { class: 'cfile' }, ...kids);
-  }
-
-  function renderFiles() {
-    if (inEl) inEl.replaceChildren(...(inFiles.length ? inFiles.map((f) => fileRow(f, 'in')) : [el('div', { class: 'cfnone', text: 'Kosong' })]));
-    if (outEl) outEl.replaceChildren(...(outFiles.length ? outFiles.map((f) => fileRow(f, 'out')) : [el('div', { class: 'cfnone', text: 'Kosong' })]));
-  }
-
-  async function addInput(files) {
-    let n = 0;
-    for (const f of files) {
-      if (f.size > MAX_FILE) { toast(`"${f.name}" terlalu besar (maks ${Math.round(MAX_FILE / 1024)} KB).`); continue; }
-      let t = '';
-      try { t = await f.text(); } catch (_) { t = ''; }
-      if (!t || t.indexOf('\u0000') >= 0) { toast(`"${f.name}" bukan file teks.`); continue; }
-      const safe = (RC && RC.safePath ? RC.safePath(f.name) : f.name) || f.name.replace(/[^\w.-]/g, '_');
-      await fs.write(`${ROOT}/In/${safe}`, t);
-      off.delete(safe);
-      n++;
+    // Balasan mentah: Nth log "result" = seq N. Hanya beberapa terakhir yang masih tersimpan.
+    const rawBySeq = new Map();
+    for (const p of (job && job.raw) || []) { const m = /-(\d+)\.md$/.exec(p); if (m) rawBySeq.set(+m[1], p); }
+    let seq = 0;
+    const shown = evs.slice(-LOG_SHOW);
+    const skippedResults = evs.length - shown.length ? evs.slice(0, evs.length - shown.length).filter((e) => e.ev === 'result').length : 0;
+    seq = skippedResults;
+    for (const o of shown) {
+      if (o.ev === 'created' || o.ev === 'plan') { if (o.ev === 'plan') { /* ringkasan rencana sudah jadi gelembung sendiri */ } continue; }
+      const line = logLine(o);
+      if (!line) continue;
+      kids.push(el('div', { class: `cpmsg sys ${/Gagal|Error|limit|belum/i.test(line) ? 'warn' : ''}`, text: `${hhmm(o.t)}  ${line}` }));
+      if (o.ev === 'result') {
+        seq++;
+        const raw = rawBySeq.get(seq);
+        if (raw && o.state !== 'limit') {
+          const t = await fs.read(raw);
+          if (t) kids.push(bubble('ai', t.length > 6000 ? t.slice(0, 6000) + '\n\n… (dipotong di tampilan, utuh ada di State/raw)' : t));
+        }
+      }
     }
-    if (n) toast(`${n} file input ditambahkan. Ikut terkirim di pesan berikutnya.`);
-    await refreshFiles();
+    if (running()) kids.push(el('div', { class: 'cpmsg ai wait', text: `Bekerja${job && job.lastAccount ? ' di ' + shortName(job.lastAccount) : ''}... (balasan tampil setelah selesai)` }));
+    if (!kids.length) kids.push(el('div', { class: 'cmempty', text: 'Belum ada proyek.\nTulis brief di bawah lalu ➤,\natau pilih proyek di atas.' }));
+    return kids;
   }
 
-  async function delFile(kind, path) {
-    try { await fs.del(`${ROOT}/${kind === 'in' ? 'In' : 'Out'}/${path}`); } catch (_) {}
-    off.delete(path);
-    await refreshFiles();
+  async function renderMsgs(force) {
+    if (!msgsEl) return;
+    if (force) timeline = '';
+    if (!rready()) { msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Fitur estafet hanya jalan di APK terbaru.' })); return; }
+    if (!curName) { timeline = ''; msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Belum ada proyek.\nTulis brief di bawah lalu ➤,\natau pilih proyek di atas.' })); return; }
+    let kids = null;
+    try { kids = await buildTimeline(); } catch (_) { return; }
+    if (!kids) return;
+    const stick = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 120;
+    msgsEl.replaceChildren(...kids);
+    if (stick) msgsEl.scrollTop = msgsEl.scrollHeight;
   }
 
-  async function exportOut(path) {
-    try {
-      const r = await fs.exp(`${ROOT}/Out/${path}`, `chat__${path.replace(/\//g, '__')}`);
-      toast(r && r.where ? 'Disalin ke ' + r.where : 'File disalin ke folder Download.', 5000);
-    } catch (e) { toast('Gagal menyalin file: ' + ((e && e.message) || e)); }
+  // ---------- Kepala: pilihan proyek, tombol aksi, progres ----------
+  function syncJob() {
+    const jobs = (R() && R().getJobs && R().getJobs()) || [];
+    if (curName && !jobs.find((j) => j.name === curName)) curName = '';
+    if (!curName && jobs.length) curName = jobs[0].name;
+    job = jobs.find((j) => j.name === curName) || null;
+    return jobs;
   }
 
-  function renderAccounts() {
-    if (!accEl) return;
-    const list = typeof accounts !== 'undefined' ? accounts : [];
-    if (!list.length) { accEl.replaceChildren(el('div', { class: 'cfnone', text: 'Belum ada akun' })); return; }
-    accEl.replaceChildren(...list.map((a) => {
-      const lim = isLimit(a);
-      let sub = lim ? 'Limit' : 'Free';
-      if (lim && a.resetAt) sub += ' · ' + atShort(a.resetAt);
-      if (sending === a.id) sub = 'Menjawab...';
-      return el('button', { type: 'button', class: `cacc ${a.id === selId ? 'on' : ''} ${lim ? 'lim' : 'free'}`, onclick: () => pick(a.id) },
-        el('i', { class: 'cdot' }),
-        el('span', { class: 'cainfo' }, el('b', { text: name(a) }), el('small', { text: sub })));
-    }));
+  function renderHead() {
+    if (!selEl) return;
+    const jobs = syncJob();
+    selEl.replaceChildren(...(jobs.length ? jobs.map((j) => el('option', { value: j.name, text: j.name, selected: j.name === curName ? 'selected' : null })) : [el('option', { value: '', text: 'Belum ada proyek' })]));
+    selEl.value = curName;
+    const run = running();
+    const has = !!job;
+    actBtn.disabled = !has || (!run && job.status === 'done');
+    actBtn.textContent = run ? '■' : '▶';
+    actBtn.setAttribute('aria-label', run ? 'Batalkan proyek' : 'Mulai / lanjutkan proyek');
+    actBtn.classList.toggle('stop', run);
+    moreBtn.disabled = !has && !rready();
+    const total = job && job.plan ? job.plan.steps.length : 0;
+    const done = job && job.plan ? job.plan.steps.filter((s) => (job.steps[s.id] || {}).status === 'done').length : 0;
+    barEl.firstChild.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}` : (rready() ? 'Tidak ada proyek' : 'Butuh APK terbaru');
   }
 
-  function renderWho() {
-    if (!whoEl) return;
-    const a = sel();
-    whoEl.textContent = a ? name(a) : 'Belum ada akun';
+  function onAct() {
+    const r = R();
+    if (!r || !job) return;
+    if (running()) r.cancelRun(); else r.runJob(job.name);
+    setTimeout(refreshAll, 400);
   }
 
-  function pick(id) {
-    selId = id;
-    renderAccounts(); renderWho(); renderMsgs();
-    updateSend();
+  function onMore() {
+    const r = R();
+    if (!r) return;
+    const m = r.modal(
+      el('b', { text: curName ? `Proyek: ${curName}` : 'Menu estafet' }),
+      el('div', { class: 'rbtns' },
+        el('button', { type: 'button', class: 'btn sm rb', text: '+ Proyek baru', onclick: () => { m.remove(); r.newProjectForm(); } }),
+      ),
+      ...(curName ? [el('div', { class: 'rbtns' },
+        el('button', { type: 'button', class: 'btn-g rb', text: '📄 Log', onclick: () => { m.remove(); r.showLog(curName); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: '⬇ Semua hasil', onclick: () => { m.remove(); r.exportProject(curName); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: '🗑 Hapus', onclick: async () => { m.remove(); await r.deleteProject(curName); refreshAll(true); } }),
+      )] : []),
+      el('div', { class: 'rbtns' },
+        el('button', { type: 'button', class: 'btn-g rb', text: '🔬 Uji chat', onclick: () => { m.remove(); r.dumpForm(); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: 'Tutup', onclick: () => m.remove() }),
+      ),
+    );
   }
 
-  function updateSend() {
-    if (sendBtn) sendBtn.disabled = !!sending;
-  }
-
-  // ---------- Kirim ----------
-  function bestReply(res) {
-    const p = String(res.partial || '');
-    if (res.state === 'limit') return p;
-    const t = /^why:/.test(String(res.text || '')) ? '' : String(res.text || '');
-    return t.length >= p.length ? t : p;
-  }
-
-  async function send() {
-    const a = sel();
-    if (!a) { toast('Pilih akun dulu di List akun.'); return; }
-    if (sending) return;
-    const text = inputEl.value.trim();
-    if (!text) return;
-    if (!hasNative()) { toast('Kirim chat hanya jalan di APK terbaru.'); return; }
-    if (typeof checking !== 'undefined' && checking) { toast('Tunggu pengecekan akun selesai dulu.'); return; }
-    if (isLimit(a) && a.resetAt && Date.parse(a.resetAt) > Date.now()) {
-      if (!confirm(`Akun ${name(a)} masih Limit sampai ${atShort(a.resetAt)}. Tetap coba kirim?`)) return;
-    }
-
-    // Rakit pesan: file input yang dicentang + teks
-    const attach = [];
-    let attachChars = 0;
-    for (const f of inFiles.filter((x) => x.on)) {
-      const c = await fs.read(`${ROOT}/In/${f.path}`);
-      if (c == null) continue;
-      attachChars += c.length;
-      attach.push(`FILE: ${f.path}\n\`\`\`\n${c}\n\`\`\``);
-    }
-    const prompt = (attach.length ? `Berikut file yang saya lampirkan:\n\n${attach.join('\n\n')}\n\n` : '') + text + '\n\n---\n' + FILE_HINT;
-
-    const c = conv(a.id);
-    c.msgs.push({ role: 'user', text: text + (attach.length ? `\n\n📎 ${attach.length} file input terlampir` : '') });
-    saveConv(a.id);
+  // ---------- Kotak ketik: brief proyek baru ----------
+  function onSend() {
+    const t = inputEl.value.trim();
+    if (!t) return;
+    const r = R();
+    if (!rready()) { toast('Butuh APK versi terbaru (fitur estafet belum ada di APK ini).'); return; }
     inputEl.value = '';
     autosize();
-    sending = a.id;
-    checking = true;   // cegah cek otomatis memakai sesi tersembunyi selama chat berjalan
-    const G = g();
-    try { if (G.keepAlive) G.keepAlive({ on: true }).catch(() => {}); } catch (_) {}
-    renderMsgs(); renderAccounts(); updateSend();
-    void attachChars;
-
-    let res;
-    try {
-      res = await G.bait({ accountId: a.id, url: c.url || CLAUDE_URL, mode: 'work', command: prompt, timeoutMs: WORK_TIMEOUT });
-    } catch (e) { res = { state: 'fail', text: 'why:error ' + ((e && e.message) || e) }; }
-    sending = null;
-    checking = false;
-    try {
-      const want = !!(typeof settings !== 'undefined' && settings.firstDone && (settings.autoMin || settings.quietOn));
-      if (!want && G.keepAlive) G.keepAlive({ on: false }).catch(() => {});
-    } catch (_) {}
-
-    await handleResult(a, c, text, res);
-    saveConv(a.id);
-    renderMsgs(); renderAccounts(); updateSend();
-    refreshFiles();
-  }
-
-  async function handleResult(a, c, text, res) {
-    const state = res.state || 'fail';
-    const reply = bestReply(res);
-    if (res.error === 'busy') { c.msgs.pop(); inputEl.value = text; autosize(); toast('Sesi tersembunyi sedang dipakai proses lain. Coba lagi sebentar.'); return; }
-    if (res.error === 'cancel') { c.msgs.push({ role: 'sys', text: 'Dibatalkan.' }); return; }
-    if (/^https:\/\/claude\.ai\/chat\//.test(res.url || '')) c.url = res.url;
-
-    if (state === 'loggedout') {
-      if (typeof noteCheck === 'function') noteCheck(a, 'loggedout', Date.now());
-      c.msgs.push({ role: 'sys', text: `Akun ${name(a)} belum login. Buka lewat Connect di halaman utama, login, lalu kirim lagi.` });
-      return;
-    }
-    if (state === 'limit') {
-      try { if (window.Relay && Relay.markLimit) Relay.markLimit(a, res.text, res.url); else if (typeof onLimitSeen === 'function') onLimitSeen(a.id, res.text, res.url, Date.now()); } catch (_) {}
-      if (reply) c.msgs.push({ role: 'ai', text: reply });
-      c.msgs.push({ role: 'sys', text: `Akun ${name(a)} kena limit${a.resetAt ? ' (reset ' + atShort(a.resetAt) + ')' : ''}. Pilih akun lain di List akun lalu kirim lagi.` });
-      await saveFiles(reply);
-      return;
-    }
-    if (!reply) {
-      const why = typeof baitWhy === 'function' ? baitWhy(res.text) : '';
-      c.msgs.push({ role: 'sys', text: 'Tidak ada balasan' + (why ? ': ' + why : '.') + ' Coba kirim lagi.' });
-      return;
-    }
-    c.msgs.push({ role: 'ai', text: reply });
-    if (state !== 'done' && state !== 'paused') c.msgs.push({ role: 'sys', text: 'Balasan mungkin terpotong.' });
-    await saveFiles(reply);
-  }
-
-  // Simpan file dari balasan ke Out
-  async function saveFiles(reply) {
-    if (!RC || !reply) return;
-    let n = 0;
-    for (const f of RC.extractFiles(reply)) {
-      try { await fs.write(`${ROOT}/Out/${f.path}`, f.content); n++; } catch (_) {}
-    }
-    if (n) toast(`${n} file hasil disimpan di Output file.`, 5000);
-  }
-
-  function newChat() {
-    const a = sel();
-    if (!a) return;
-    if (sending) { toast('Tunggu balasan selesai dulu.'); return; }
-    const c = conv(a.id);
-    if (!c.msgs.length && !c.url) return;
-    if (!confirm(`Mulai chat baru untuk ${name(a)}? Riwayat di sini dihapus (chat di claude.ai tidak).`)) return;
-    c.url = ''; c.msgs = [];
-    saveConv(a.id);
-    renderMsgs();
+    r.newProjectForm(t);
   }
 
   function autosize() {
@@ -320,15 +208,153 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
   }
 
-  // ---------- Buka / tutup ----------
-  function prepare() {
-    if (!page) build();
-    const list = typeof accounts !== 'undefined' ? accounts : [];
-    if (!sel()) selId = (list.find((a) => !isLimit(a)) || list[0] || {}).id || null;
-    pick(selId);
-    refreshFiles();
+  // ---------- Panel kanan: file ----------
+  async function refreshFiles() {
+    inFiles = []; outFiles = [];
+    if (curName && rready()) {
+      try {
+        const fs = R().fs;
+        inFiles = (await fs.list(jp('In'))).filter((f) => f.path !== 'brief.md');
+        outFiles = await fs.list(jp('Out'));
+      } catch (_) {}
+    }
+    renderFiles();
   }
 
+  function fileRow(f, kind) {
+    const kids = [el('span', { class: 'cfname', text: f.path, title: f.path })];
+    if (kind === 'out') kids.push(el('button', { type: 'button', class: 'cfbtn', text: '⬇', 'aria-label': 'Salin ke Download', onclick: () => exportOne(f.path) }));
+    kids.push(el('button', { type: 'button', class: 'cfbtn', text: '✕', 'aria-label': 'Hapus', onclick: () => delFile(kind, f.path) }));
+    return el('div', { class: 'cfile' }, ...kids);
+  }
+
+  function renderFiles() {
+    const none = (t) => [el('div', { class: 'cfnone', text: t })];
+    if (inEl) inEl.replaceChildren(...(inFiles.length ? inFiles.map((f) => fileRow(f, 'in')) : none('Kosong')));
+    if (outEl) outEl.replaceChildren(...(outFiles.length ? outFiles.map((f) => fileRow(f, 'out')) : none('Kosong')));
+  }
+
+  async function addInput(files) {
+    if (!curName) { toast('Buat atau pilih proyek dulu.'); return; }
+    const fs = R().fs;
+    let n = 0;
+    for (const f of files) {
+      if (f.size > MAX_FILE) { toast(`"${f.name}" terlalu besar (maks ${Math.round(MAX_FILE / 1024)} KB).`); continue; }
+      let t = '';
+      try { t = await f.text(); } catch (_) { t = ''; }
+      if (!t || t.indexOf('\u0000') >= 0) { toast(`"${f.name}" bukan file teks.`); continue; }
+      const safe = (RC && RC.safePath ? RC.safePath(f.name) : f.name) || f.name.replace(/[^\w.-]/g, '_');
+      if (safe === 'brief.md') { toast('Nama brief.md dipakai untuk brief proyek. Ganti nama file.'); continue; }
+      await fs.write(jp('In/' + safe), t);
+      n++;
+    }
+    if (n) toast(`${n} file input ditambahkan. Ikut ke rencana dan langkah berikutnya.`);
+    await refreshFiles();
+  }
+
+  async function delFile(kind, path) {
+    try { await R().fs.del(jp((kind === 'in' ? 'In/' : 'Out/') + path)); } catch (_) {}
+    await refreshFiles();
+  }
+
+  async function exportOne(path) {
+    try {
+      const r = await window.Relay.fs.read(jp('Out/' + path));
+      if (r == null) throw new Error('file tidak ada');
+      const x = (typeof P !== 'undefined' && P.GeckoBrowser) || null;
+      if (x && x.projExport) {
+        const res = await x.projExport({ path: jp('Out/' + path), name: `${curName}__${path.replace(/\//g, '__')}` });
+        toast(res && res.where ? 'Disalin ke ' + res.where : 'File disalin ke folder Download.', 5000);
+      }
+    } catch (e) { toast('Gagal menyalin file: ' + ((e && e.message) || e)); }
+  }
+
+  // ---------- Panel kanan: list akun (pool proyek) ----------
+  function renderAccounts() {
+    if (!accEl) return;
+    const list = accs();
+    if (!list.length) { accEl.replaceChildren(el('div', { class: 'cfnone', text: 'Belum ada akun' })); return; }
+    const pool = (job && job.pool) || [];
+    const run = running();
+    accEl.replaceChildren(...list.map((a) => {
+      const lim = a.status === 'working';
+      const idx = pool.indexOf(a.id);
+      let sub = lim ? 'Limit' : 'Free';
+      if (lim && a.resetAt) sub += ' · ' + atShort(a.resetAt);
+      const now = run && job && job.lastAccount === a.name;
+      if (now) sub = 'Bekerja...';
+      return el('button', { type: 'button', class: `cacc ${now ? 'on' : ''} ${lim ? 'lim' : 'free'} ${job && idx < 0 ? 'out' : ''}`, onclick: () => togglePool(a) },
+        el('i', { class: 'cdot' }),
+        el('span', { class: 'cainfo' }, el('b', { text: (idx >= 0 ? `${idx + 1}. ` : '') + name(a) }), el('small', { text: sub })));
+    }));
+  }
+
+  async function togglePool(a) {
+    if (!job) { toast('Buat atau pilih proyek dulu.'); return; }
+    if (running()) { toast('Batalkan proyek dulu untuk mengubah akun.'); return; }
+    const cur = (await R().loadJob(curName)) || job;
+    const i = cur.pool.indexOf(a.id);
+    if (i >= 0) { if (cur.pool.length <= 1) { toast('Minimal satu akun di pool.'); return; } cur.pool.splice(i, 1); }
+    else cur.pool.push(a.id);
+    await R().saveJob(cur);
+    await R().refreshJobs();
+    toast(i >= 0 ? `${name(a)} dikeluarkan dari pool.` : `${name(a)} masuk pool (prioritas terakhir).`);
+  }
+
+  // ---------- Log proyek (untuk ditempel saat ada error) ----------
+  async function refreshLog(force) {
+    if (!logEl) return;
+    if (!curName || !rready()) { logText = ''; logMark = ''; logEl.textContent = 'Belum ada proyek.'; return; }
+    let raw = '';
+    try { raw = (await R().fs.read(jp('State/log.jsonl'))) || ''; } catch (_) {}
+    const mark = `${curName}|${raw.length}|${job && job.status}|${job && job.error}`;
+    if (!force && mark === logMark) return;
+    logMark = mark;
+    const rows = raw.split('\n').filter(Boolean).slice(-40).map((l) => {
+      try {
+        const o = JSON.parse(l);
+        const { t: at, ev, ...rest } = o;
+        const d = new Date(at);
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${ev}${Object.keys(rest).length ? ' ' + JSON.stringify(rest) : ''}`;
+      } catch (_) { return l; }
+    });
+    const head = [`Proyek: ${curName}`];
+    if (job) {
+      head.push(`Status: ${job.status}${job.current ? ' (' + job.current + ')' : ''}${job.waitUntil ? ' sampai ' + new Date(job.waitUntil).toISOString() : ''}`);
+      if (job.error) head.push('Error: ' + job.error);
+      head.push('Akun: ' + accs().map((a) => `${shortName(a.name)}=${a.status === 'working' ? 'limit' : 'free'}${a.check && a.check.state === 'loggedout' ? '/logout' : ''}`).join(', '));
+    }
+    logText = head.join('\n') + '\n---\n' + (rows.join('\n') || 'Belum ada catatan.');
+    logEl.textContent = logText;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  async function copyLog() {
+    await refreshLog(true);
+    if (!logText) { toast('Belum ada log.'); return; }
+    try { await copyText(logText); toast('Log disalin. Tinggal tempel.'); } catch (_) { toast('Gagal menyalin. Tahan teks log lalu salin manual.'); }
+  }
+
+  // ---------- Segarkan ----------
+  async function refreshAll(force) {
+    if (!page || !page.classList.contains('show') && !force) { /* tetap segar saat digeser */ }
+    renderHead();
+    renderAccounts();
+    refreshLog(force);
+    await renderMsgs(force);
+  }
+
+  function onJobsChange() { if (page) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); } }
+  window.addEventListener('relaychange', onJobsChange);
+
+  function prepare() {
+    if (!page) build();
+    const r = R();
+    if (r && r.refreshJobs) r.refreshJobs().then(() => { renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true); }).catch(() => {});
+    renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true);
+  }
+
+  // ---------- Buka / tutup ----------
   function open() {
     prepare();
     page.style.transform = '';
@@ -337,7 +363,7 @@
     document.body.classList.add('chat-open');
     if (!(history.state && history.state.cam === 'chat')) { try { history.pushState({ cam: 'chat' }, ''); } catch (_) {} }
     clearInterval(timer);
-    timer = setInterval(() => { renderAccounts(); }, 2000);
+    timer = setInterval(() => { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) refreshFiles(); }, 2000);
   }
 
   function close(fromPop) {
@@ -408,24 +434,30 @@
   document.addEventListener('touchcancel', endSwipe, { passive: true });
 
   function build() {
-    const holdBtn = (cls, text, hint, run) => {
-      const b = el('button', { type: 'button', class: `tbtn ${cls} hold chbtn`, text, title: hint, 'aria-label': hint });
+    const holdBtn = (text, hint, run) => {
+      const b = el('button', { type: 'button', class: 'tbtn hold chbtn', text, title: hint, 'aria-label': hint });
       holdPress(b, 1000, run, () => toast(hint));
       return b;
     };
-    const checkB = el('button', { type: 'button', class: 'tbtn primary chbtn', text: '⟳ Cek akun', 'aria-label': 'Cek semua akun', onclick: () => { if (typeof checking !== 'undefined' && checking) toast('Sedang mengecek akun, tunggu sebentar.'); else { toast('Mengecek semua akun...'); checkAll(); } } });
-    const baitB = holdBtn('', '🎣 Pancing akun', 'Tahan 1 detik: pancing semua akun sekarang, lalu cek', () => { if (typeof checking !== 'undefined' && checking) toast('Sedang mengecek akun, tunggu sebentar.'); else { toast('Memancing semua akun...'); baitNow(); } });
+    const busy = () => typeof checking !== 'undefined' && checking;
+    const checkB = el('button', { type: 'button', class: 'tbtn primary chbtn', text: '⟳ Cek akun', 'aria-label': 'Cek semua akun', onclick: () => { if (busy()) toast('Sedang mengecek akun, tunggu sebentar.'); else { toast('Mengecek semua akun...'); checkAll(); } } });
+    const baitB = holdBtn('🎣 Pancing akun', 'Tahan 1 detik: pancing semua akun sekarang, lalu cek', () => { if (busy()) toast('Sedang mengecek akun, tunggu sebentar.'); else { toast('Memancing semua akun...'); baitNow(); } });
 
     fileIn = el('input', { type: 'file', multiple: 'multiple', accept: 'text/*,.md,.json,.js,.ts,.tsx,.jsx,.py,.java,.kt,.html,.css,.csv,.xml,.yml,.yaml,.txt,.sh,.sql,.c,.cpp,.h,.go,.rs,.php,.rb', hidden: true, onchange: async (e) => { const fl = Array.from(e.target.files || []); e.target.value = ''; if (fl.length) await addInput(fl); } });
     inEl = el('div', { class: 'cflist' });
     outEl = el('div', { class: 'cflist' });
     accEl = el('div', { class: 'cflist caccs' });
 
-    whoEl = el('b', { class: 'cwho', text: '' });
+    selEl = el('select', { class: 'cpsel', 'aria-label': 'Proyek', onchange: (e) => { curName = e.target.value; timeline = ''; job = null; refreshAll(true); refreshFiles(); } });
+    logEl = el('pre', { class: 'cplog', text: 'Belum ada proyek.' });
+    actBtn = el('button', { type: 'button', class: 'cpact', text: '▶', onclick: onAct });
+    moreBtn = el('button', { type: 'button', class: 'cnew', text: '⋯', 'aria-label': 'Menu estafet', onclick: onMore });
+    barEl = el('div', { class: 'rbar cpbar' }, el('i', { style: 'width:0%' }));
+    stEl = el('div', { class: 'cpstat', text: '' });
     msgsEl = el('div', { class: 'cpmsgs', 'aria-live': 'polite' });
-    inputEl = el('textarea', { class: 'cinput', rows: '1', placeholder: 'kolom chat', 'aria-label': 'Kolom chat', autocomplete: 'off' });
+    inputEl = el('textarea', { class: 'cinput', rows: '1', placeholder: 'kolom chat', 'aria-label': 'Kolom chat: tulis brief proyek baru', autocomplete: 'off' });
     inputEl.addEventListener('input', autosize);
-    sendBtn = el('button', { type: 'button', class: 'btn sm csend', text: '➤', 'aria-label': 'Kirim', onclick: send });
+    sendBtn = el('button', { type: 'button', class: 'btn sm csend', text: '➤', 'aria-label': 'Buat proyek baru dari brief ini', onclick: onSend });
 
     const back = el('button', { type: 'button', class: 'cback', 'aria-label': 'Kembali ke halaman utama', onclick: () => close(false) },
       (() => {
@@ -437,21 +469,23 @@
         return s;
       })());
 
-    const chatCol = el('section', { class: 'cchat', 'aria-label': 'Chat' },
-      el('div', { class: 'cphead' }, back, whoEl, el('button', { type: 'button', class: 'cnew', text: '＋ Baru', onclick: newChat })),
+    const chatCol = el('section', { class: 'cchat', 'aria-label': 'Estafet' },
+      el('div', { class: 'cphead' }, back, selEl, actBtn, moreBtn),
+      el('div', { class: 'cpinfo' }, barEl, stEl),
       msgsEl,
       el('div', { class: 'cbar' }, inputEl, sendBtn));
 
     const side = el('aside', { class: 'cside', 'aria-label': 'Panel' },
       checkB, baitB,
       el('div', { class: 'cpanel' },
-        el('div', { class: 'cptitle' }, el('span', { text: 'Input file' }), el('button', { type: 'button', class: 'cfbtn add', text: '＋', 'aria-label': 'Tambah file input', onclick: () => fileIn.click() })),
+        el('div', { class: 'cptitle' }, el('span', { text: 'Input file' }), el('button', { type: 'button', class: 'cfbtn add', text: '＋', 'aria-label': 'Tambah file input', onclick: () => { if (!curName) toast('Buat atau pilih proyek dulu.'); else fileIn.click(); } })),
         inEl),
       el('div', { class: 'cpanel' }, el('div', { class: 'cptitle' }, el('span', { text: 'Output file' })), outEl),
-      el('div', { class: 'cpanel grow' }, el('div', { class: 'cptitle' }, el('span', { text: 'List akun' })), accEl),
+      el('div', { class: 'cpanel' }, el('div', { class: 'cptitle' }, el('span', { text: 'List akun' })), accEl),
+      el('div', { class: 'cpanel' }, el('div', { class: 'cptitle' }, el('span', { text: 'Log proyek' }), el('button', { type: 'button', class: 'cfbtn add', text: '📋', 'aria-label': 'Salin log', onclick: copyLog })), logEl),
       fileIn);
 
-    page = el('div', { class: 'chatpage', role: 'dialog', 'aria-label': 'Halaman chat' }, chatCol, side);
+    page = el('div', { class: 'chatpage', role: 'dialog', 'aria-label': 'Halaman estafet' }, chatCol, side);
     document.body.append(page);
   }
 
