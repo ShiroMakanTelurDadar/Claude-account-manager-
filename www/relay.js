@@ -13,16 +13,18 @@
   const g = () => (typeof P !== 'undefined' && P.GeckoBrowser) || null;
   const ready = () => { const G = g(); return !!(typeof native !== 'undefined' && native && G && G.bait && G.projWrite); };
 
-  const STEP_TIMEOUT = 12 * 60 * 1000;   // ms: batas satu langkah (sejak halaman siap)
+  const STEP_TIMEOUT = 15 * 60 * 1000;   // ms: batas satu langkah (sejak halaman siap)
   const PLAN_TIMEOUT = 6 * 60 * 1000;
   const DUMP_TIMEOUT = 120000;
   const MAX_TRIES = 3;                   // langkah yang selesai dijawab tapi file hasilnya tetap tidak lengkap: menyerah setelah ini
   const MAX_FAILS = 2;                   // gagal berturut-turut di satu akun sebelum akun itu dilewati
+  const WAIT_COND_MS = 10 * 60 * 1000;   // syarat Wi-Fi / charging belum terpenuhi: cek lagi lewat alarm (bukan polling)
   const KEEP_CHATS = 2;                  // chat estafet yang disimpan per akun di claude.ai; yang lebih lama dihapus
   const RAW_KEEP = 8;                    // jumlah balasan mentah terakhir yang disimpan per proyek
 
   const STATUS_LABEL = {
     queued: 'Antre', running: 'Berjalan', waiting_limit: 'Menunggu limit', waiting_login: 'Perlu login',
+    waiting_cond: 'Menunggu Wi-Fi/charging', waiting_manual: 'Perlu bantuan manual',
     done: 'Selesai', failed: 'Gagal', cancelled: 'Dibatalkan',
   };
 
@@ -39,7 +41,12 @@
   async function loadJob(name) {
     try { const t = await fs.read(jp(name, 'State/job.json')); return t ? JSON.parse(t) : null; } catch (_) { return null; }
   }
-  const saveJob = (job) => fs.write(jp(job.name, 'State/job.json'), JSON.stringify(job, null, 1));
+  const saveJob = (job) => {
+    RC.timerTick(job, Date.now());
+    const i = jobs.findIndex((x) => x.name === job.name);
+    if (i >= 0) jobs[i] = job;   // tampilan (chat.js) membaca daftar ini: timer ikut hidup
+    return fs.write(jp(job.name, 'State/job.json'), JSON.stringify(job, null, 1));
+  };
   const logEv = (name, ev, extra) => fs.write(jp(name, 'State/log.jsonl'), JSON.stringify(Object.assign({ t: Date.now(), ev }, extra || {})) + '\n', true).catch(() => {});
 
   // ---------- Notifikasi ----------
@@ -60,14 +67,29 @@
     } catch (_) {}
   }
   const wakers = new Map();
+  // Menunggu reset: tanpa polling. Hanya satu pewaktu JS (kalau aplikasi hidup) + alarm sistem (membangunkan walau layar mati / app ditutup).
   function armWake(job) {
     clearTimeout(wakers.get(job.name));
     wakers.delete(job.name);
-    if (job.status !== 'waiting_limit' || !job.waitUntil) { waiting.delete(job.name); return; }
-    waiting.set(job.name, job.waitUntil);
+    const waitingJob = (job.status === 'waiting_limit' || job.status === 'waiting_cond') && job.waitUntil;
+    if (!waitingJob) { waiting.delete(job.name); try { const G = g(); if (G && G.relayAlarm) G.relayAlarm({ project: job.name, at: 0 }).catch(() => {}); } catch (_) {} return; }
+    if (job.status === 'waiting_limit') waiting.set(job.name, job.waitUntil); else waiting.delete(job.name);
     const ms = Math.max(1000, job.waitUntil - Date.now() + 3000);
     if (ms < 2147000000) wakers.set(job.name, setTimeout(() => { wakers.delete(job.name); runJob(job.name); }, ms));
+    try { const G = g(); if (G && G.relayAlarm) G.relayAlarm({ project: job.name, at: job.waitUntil + 3000 }).catch(() => {}); } catch (_) {}
     if (typeof scheduleAll === 'function') scheduleAll();
+  }
+
+  // Layanan latar depan: wake = true hanya saat tahap aktif; saat menunggu cukup notifikasi persisten.
+  function keepOn(wake, text) { try { const G = g(); if (G && G.keepAlive) G.keepAlive({ on: true, wake: !!wake, text: text || '' }).catch(() => {}); } catch (_) {} }
+  function keepOff() {
+    try {
+      const G = g();
+      const want = !!(typeof settings !== 'undefined' && settings.firstDone && (settings.autoMin || settings.quietOn));
+      const anyWait = jobs.some((j) => j.status === 'waiting_limit' || j.status === 'waiting_cond');
+      if (anyWait) keepOn(false, 'Menunggu reset limit (hemat baterai)');
+      else if (!want && G && G.keepAlive) G.keepAlive({ on: false }).catch(() => {});
+    } catch (_) {}
   }
 
   // ---------- Akun ----------
@@ -115,26 +137,32 @@
   }
 
   // ---------- Prompt ----------
-  // File lampiran proyek (In/, selain brief.md). Dibaca tiap kali prompt dibuat, jadi file yang ditambah belakangan ikut.
+  // File lampiran proyek (In/, selain brief.md). Hanya teks yang ditempel ke prompt; zip/biner dilampirkan sebagai file di tahap 1 (lihat attachmentsFor).
+  const BIN_RE = /\.(zip|glb|gltf|pmx|vrm|fbx|png|jpe?g|gif|webp|mp4|mp3|wav|ttf|otf|woff2?)$/i;
   async function readInFiles(name) {
     const out = [];
     for (const f of await fs.list(jp(name, 'In'))) {
-      if (f.path === 'brief.md') continue;
+      if (f.path === 'brief.md' || BIN_RE.test(f.path)) continue;
       const c = await fs.read(jp(name, 'In/' + f.path));
       if (c != null) out.push({ path: f.path, content: c });
     }
     return out;
   }
+  // Lampiran yang diunggah ke chat tahap ini (path relatif terhadap Projects). Tahap N>1: hanya zip tahap sebelumnya. Tahap 1: zip dari In/.
+  async function attachmentsFor(job, cur) {
+    if (cur.kind !== 'step') return [];
+    if (cur.index > 0) return [jp(job.name, 'Out/' + job.plan.steps[cur.index - 1].zip)];
+    const ins = (await fs.list(jp(job.name, 'In'))).filter((f) => /\.zip$/i.test(f.path)).slice(0, RC.MAX_ATTACH);
+    return ins.map((f) => jp(job.name, 'In/' + f.path));
+  }
+  function hintFor(job) { return RC.budgetHint(job.stats); }
+  const maxStages = () => RC.clampSteps((typeof settings !== 'undefined' && settings.maxStages) || RC.MAX_STEPS);
   async function promptFor(job, cur) {
-    if (cur.kind === 'plan') return RC.buildPlanPrompt(await fs.read(jp(job.name, 'In/brief.md')) || '', await readInFiles(job.name));
-    const st = job.steps[cur.step.id] || {};
-    const needFiles = [];
-    for (const p of cur.step.needs) {
-      const c = await fs.read(jp(job.name, 'Out/' + p));
-      if (c != null) needFiles.push({ path: p, content: c });
-    }
+    if (cur.kind === 'plan') return RC.buildPlanPrompt(await fs.read(jp(job.name, 'In/brief.md')) || '', await readInFiles(job.name), { maxSteps: maxStages(), hint: hintFor(job) });
+    if (cur.kind === 'split') return RC.buildSplitPrompt(job.plan, cur.index, job.split && job.split.why, Math.max(2, Math.min(5, maxStages() - job.plan.steps.length + 1)));
     return RC.buildStepPrompt({
-      plan: job.plan, step: cur.step, index: cur.index, got: st.got || [], needFiles, inFiles: await readInFiles(job.name),
+      plan: job.plan, step: cur.step, index: cur.index, inFiles: await readInFiles(job.name), hint: hintFor(job),
+      prevZip: cur.index > 0 ? job.plan.steps[cur.index - 1].zip : '',
       progress: RC.buildProgress(job.name, job.plan, job.steps), brief: await fs.read(jp(job.name, 'In/brief.md')) || '',
     });
   }
@@ -142,6 +170,7 @@
 
   function curStep(job) {
     if (!job.plan) return { kind: 'plan' };
+    if (job.split && job.split.go) return { kind: 'split', index: job.split.index };
     for (let i = 0; i < job.plan.steps.length; i++) {
       const s = job.plan.steps[i];
       if ((job.steps[s.id] || {}).status !== 'done') return { kind: 'step', step: s, index: i };
@@ -152,6 +181,29 @@
   // ---------- Satu putaran job ----------
   let running = null;   // {name, cancel}
 
+  async function deviceOk() {
+    if (typeof settings === 'undefined' || !(settings.relayWifi || settings.relayCharge)) return '';
+    try {
+      const d = await g().deviceState();
+      if (settings.relayWifi && !d.wifi) return 'menunggu Wi-Fi';
+      if (settings.relayCharge && !d.charging) return 'menunggu charger';
+    } catch (_) { /* tidak bisa membaca: jangan menahan */ }
+    return '';
+  }
+
+  async function askBatteryOnce() {
+    try {
+      if (typeof settings === 'undefined' || settings.battAsked) return;
+      const st = await g().bgStatus();
+      settings.battAsked = true;
+      if (typeof saveSettings === 'function') saveSettings();
+      if (st && st.battery === false) {
+        toast('Izinkan aplikasi diabaikan dari penghematan baterai supaya estafet jalan saat HP tidur.', 8000);
+        await g().bgOpen({ what: 'battery' });
+      }
+    } catch (_) { /* abaikan */ }
+  }
+
   async function runJob(name) {
     if (running) { toast('Ada proyek lain yang sedang berjalan.'); return; }
     const G = g();
@@ -160,8 +212,8 @@
     if (typeof checking !== 'undefined' && (checking || (typeof resumeBusy !== 'undefined' && resumeBusy))) { toast('Tunggu pengecekan akun selesai dulu.'); return; }
     const run = { name, cancel: false };
     running = run;
-    checking = true;   // cegah cek otomatis memakai sesi tersembunyi selama job
-    try { if (G.keepAlive) G.keepAlive({ on: true }).catch(() => {}); } catch (_) {}
+    checking = true;   // cegah cek otomatis memakai sesi tersembunyi selama job (satu sesi GeckoView hidup sekali)
+    await askBatteryOnce();
     renderList();
     try {
       await loop(run);
@@ -173,11 +225,8 @@
     } finally {
       running = null;
       checking = false;
-      try {
-        const want = !!(typeof settings !== 'undefined' && settings.firstDone && (settings.autoMin || settings.quietOn));
-        if (!want && G.keepAlive) G.keepAlive({ on: false }).catch(() => {});
-      } catch (_) {}
       await refreshJobs();
+      keepOff();
     }
   }
 
@@ -186,6 +235,8 @@
     const G = g();
     let job = await loadJob(name);
     if (!job) throw new Error('job.json tidak ditemukan');
+    job.stats = job.stats || { runs: [], streak: {} };
+    job.stageFails = job.stageFails || {};
     const skip = new Set();
     const fails = new Map();
     job.status = 'running'; job.error = ''; job.waitUntil = 0;
@@ -197,8 +248,16 @@
     while (!run.cancel) {
       const cur = curStep(job);
       if (!cur) {
-        job.status = 'done'; await saveJob(job); await logEv(name, 'done');
-        await notifyNow(`Proyek "${name}" selesai`, 'Semua langkah sudah dikerjakan.', name);
+        job.status = 'done'; await saveJob(job);
+        { const v = RC.timerView(job, Date.now()); await logEv(name, 'done', v ? { total: v.total, work: v.work, wait: v.wait } : {}); }
+        await notifyNow(`Proyek "${name}" selesai`, 'Semua tahap sudah dikerjakan. Zip terakhir = hasil akhir.', name);
+        return;
+      }
+      const cond = await deviceOk();
+      if (cond) {
+        job.status = 'waiting_cond'; job.waitUntil = Date.now() + WAIT_COND_MS; job.error = 'Syarat belum terpenuhi: ' + cond;
+        await saveJob(job); await logEv(name, 'wait-cond', { why: cond });
+        armWake(job);
         return;
       }
       const pick = RC.pickAccount(accounts, job.pool, Date.now(), skip);
@@ -206,7 +265,7 @@
         job.status = 'waiting_limit'; job.waitUntil = pick.wait; await saveJob(job);
         await logEv(name, 'wait-limit', { until: new Date(pick.wait).toISOString() });
         armWake(job);
-        toast(`Semua akun limit. Dilanjutkan otomatis jam ${atShort(new Date(pick.wait).toISOString())}.`, 7000);
+        await notifyNow(`Semua akun limit`, `Proyek "${name}" dilanjutkan otomatis jam ${atShort(new Date(pick.wait).toISOString())}.`, name);
         return;
       }
       if (pick.none) {
@@ -216,17 +275,32 @@
         return;
       }
       const a = pick.account;
-      const tag = cur.kind === 'plan' ? 'plan' : cur.step.id;
+      const tag = cur.kind === 'step' ? cur.step.id : cur.kind;
       const prompt = await promptFor(job, cur);
+      let uploads = [];
+      try { uploads = await attachmentsFor(job, cur); } catch (_) { uploads = []; }
+      if (cur.kind === 'step' && cur.index > 0 && !(await fs.list(jp(name, 'Out'))).some((f) => f.path === job.plan.steps[cur.index - 1].zip)) {
+        // zip tahap sebelumnya hilang (dihapus): tahap itu diulang
+        const prev = job.plan.steps[cur.index - 1];
+        job.steps[prev.id] = { status: 'pending', got: [] };
+        await logEv(name, 'zip-missing', { zip: prev.zip });
+        continue;
+      }
       job.lastAccount = a.name; job.status = 'running'; job.current = tag;
       await saveJob(job);
-      await logEv(name, 'send', { tag, account: a.name, chars: prompt.length });
+      keepOn(true, `Mengerjakan ${tag} · ${shortName(a.name)}`);
+      await logEv(name, 'send', { tag, account: a.name, chars: prompt.length, attach: uploads.length });
       renderList();
 
       let res;
+      const t0 = Date.now();
       try {
-        res = await G.bait({ accountId: a.id, url: CLAUDE_URL, mode: 'work', command: prompt, timeoutMs: cur.kind === 'plan' ? PLAN_TIMEOUT : STEP_TIMEOUT });
+        res = await G.bait({
+          accountId: a.id, url: CLAUDE_URL, mode: 'work', command: prompt, uploads,
+          expect: cur.kind === 'step' ? cur.step.zip : '', timeoutMs: cur.kind === 'step' ? STEP_TIMEOUT : PLAN_TIMEOUT,
+        });
       } catch (e) { res = { state: 'fail', text: 'why:error ' + ((e && e.message) || e) }; }
+      res.ms = Date.now() - t0;
       if (res.error === 'cancel' || run.cancel) break;
       if (res.error === 'busy') {
         job.status = 'queued'; job.error = 'Sesi tersembunyi sedang dipakai proses lain. Coba lagi sebentar.';
@@ -251,6 +325,29 @@
     return t.length >= p.length ? t : p;
   }
 
+  // ---------- Pengukuran jatah ----------
+  // Hitung tahap yang selesai berturut-turut oleh satu akun. Saat akun itu kena limit, satu "putaran" dicatat: itulah ukuran jatah akun.
+  function countDone(job, a) { job.stats.streak[a.id] = (job.stats.streak[a.id] || 0) + 1; }
+  function endRun(job, a) {
+    const done = job.stats.streak[a.id] || 0;
+    job.stats.streak[a.id] = 0;
+    job.stats.runs.push({ acc: a.id, done, limited: true, at: Date.now() });
+    if (job.stats.runs.length > 30) job.stats.runs.shift();
+    return done;
+  }
+
+  // Pindahkan zip hasil dari _incoming ke Out/<zip tahap>. Hanya yang benar-benar zip (awalan PK) dan tidak kosong yang diterima.
+  async function takeZip(job, step, res) {
+    const dl = (Array.isArray(res.downloads) ? res.downloads : []).filter((d) => d && d.zip && d.size > 100);
+    if (!dl.length) return false;
+    const base = step.zip.replace(/\.zip$/i, '').toLowerCase();
+    const pick = dl.filter((d) => String(d.name || '').toLowerCase().includes(base)).pop() || dl[dl.length - 1];
+    await g().projMove({ from: pick.path, to: jp(job.name, 'Out/' + step.zip) });
+    for (const d of dl) if (d !== pick) await fs.del(d.path).catch(() => {});
+    await logEv(job.name, 'zip', { zip: step.zip, from: pick.name, size: pick.size });
+    return true;
+  }
+
   // Memproses hasil satu percobaan. Mengembalikan 'stop' kalau job harus berhenti, selain itu lanjut ke putaran berikutnya.
   async function handleResult(job, cur, tag, a, res, skip, fails) {
     const name = job.name;
@@ -258,24 +355,36 @@
     const text = bestText(res);
     const why = typeof baitWhy === 'function' ? baitWhy(res.text) : '';
 
+    // Timer: lama percobaan ini ditambahkan ke tahap (atau ke rencana)
+    if (cur.kind === 'step') { const s0 = job.steps[cur.step.id] = job.steps[cur.step.id] || { status: 'pending', got: [] }; s0.ms = (s0.ms || 0) + (res.ms || 0); }
+    else job.planMs = (job.planMs || 0) + (res.ms || 0);
+
     // Simpan jejak mentah (balasan + data percakapan) untuk diperiksa. Yang lama dibuang.
     job.seq = (job.seq || 0) + 1;
     job.raw = job.raw || [];
     if (text) { await fs.write(jp(name, `State/raw/${tag}-${job.seq}.md`), text); job.raw.push(`State/raw/${tag}-${job.seq}.md`); }
     if (res.data) { await fs.write(jp(name, `State/raw/${tag}-${job.seq}.json`), res.data); job.raw.push(`State/raw/${tag}-${job.seq}.json`); }
     while (job.raw.length > RAW_KEEP * 2) await fs.del(jp(name, job.raw.shift())).catch(() => {});
-    await logEv(name, 'result', { tag, account: a.name, state, chars: text.length, timedOut: !!res.timedOut, why });
+    await logEv(name, 'result', { tag, account: a.name, ms: res.ms || 0, state, sent: !!res.sent, chars: text.length, dl: (res.downloads || []).length, timedOut: !!res.timedOut, why, cards: String(res.cards || '').slice(0, 300) });
 
     if (state === 'loggedout') {
       skip.add(a.id);
       if (typeof noteCheck === 'function') noteCheck(a, 'loggedout', Date.now());
       return 'next';
     }
-    if (state === 'limit') markLimit(a, res.text, res.url);
-    const challenge = state === 'fail' && /^why:challenge/.test(String(res.text || ''));
-    if (challenge) skip.add(a.id);
-    if (state === 'fail' && !text) {
-      // Gagal tanpa hasil apa pun
+    if (state === 'limit') { markLimit(a, res.text, res.url); endRun(job, a); }
+    if (state === 'fail' && /^why:challenge/.test(String(res.text || ''))) skip.add(a.id);
+
+    // Lampiran gagal terpasang: bukan salah akun. Dua kali berturut-turut -> jalur manual (user pilih file sekali).
+    if (res.upload) {
+      job.uploadFails = (job.uploadFails || 0) + 1;
+      if (job.uploadFails >= 2) return manual(job, cur, a, 'Lampiran otomatis gagal: ' + String(res.upload).slice(0, 160));
+      return 'next';
+    }
+    job.uploadFails = 0;
+
+    // Gagal tanpa hasil apa pun dan tanpa prompt terkirim (halaman tidak siap dsb.)
+    if (state === 'fail' && !text && !res.sent) {
       const n = (fails.get(a.id) || 0) + 1;
       fails.set(a.id, n);
       if (n >= MAX_FAILS) skip.add(a.id);
@@ -286,10 +395,11 @@
     }
     fails.delete(a.id);
 
-    // Ada teks (utuh atau parsial): selamatkan apa yang utuh
-    const counted = state !== 'limit';   // limit bukan salah langkah ini; selain itu (selesai tapi kurang, timeout, tak dikenal) dihitung supaya tidak berputar selamanya
+    const counted = state !== 'limit';
+
+    // ---- Rencana ----
     if (cur.kind === 'plan') {
-      const r = RC.parsePlan(text);
+      const r = RC.parsePlan(text, maxStages());
       if (r.ok) {
         job.plan = r.plan; job.steps = {};
         for (const s of r.plan.steps) job.steps[s.id] = { status: 'pending', got: [] };
@@ -302,43 +412,63 @@
         job.tries = job.tries || {};
         job.tries.plan = (job.tries.plan || 0) + 1;
         job.error = 'Rencana belum valid: ' + r.err;
-        // Bentuk balasan dicatat supaya penyebab bisa dilihat: blok apa saja yang terbaca (bahasa:utuh/terbuka:panjang), awal dan akhir teks
-        await logEv(name, 'plan-bad', {
-          err: r.err, try: job.tries.plan,
-          blocks: RC.extractBlocks(text).map((b) => `${b.lang || '-'}:${b.complete ? 'utuh' : 'terbuka'}:${b.content.length}`),
-          head: text.slice(0, 140), tail: text.slice(-100),
-        });
+        await logEv(name, 'plan-bad', { err: r.err, try: job.tries.plan, head: text.slice(0, 140), tail: text.slice(-100) });
         if (job.tries.plan >= MAX_TRIES) return fail(job, 'Rencana gagal dibuat ' + MAX_TRIES + 'x: ' + r.err);
       }
       return 'next';
     }
 
-    const st = job.steps[cur.step.id] = job.steps[cur.step.id] || { status: 'pending', got: [] };
-    st.got = st.got || [];
-    const wanted = new Set(cur.step.outputs);
-    let saved = 0;
-    for (const f of RC.extractFiles(text)) {
-      if (!wanted.has(f.path) || st.got.includes(f.path)) continue;
-      await fs.write(jp(name, 'Out/' + f.path), f.content);
-      st.got.push(f.path);
-      saved++;
+    // ---- Pecah tahap ----
+    if (cur.kind === 'split') {
+      const r = RC.applySplit(job.plan, cur.index, text, maxStages());
+      if (r.ok) {
+        const old = job.steps; const steps = {};
+        r.plan.steps.forEach((s, i) => { const prev = i < cur.index ? old['s' + (i + 1)] : null; steps[s.id] = prev || { status: 'pending', got: [] }; });
+        job.plan = r.plan; job.steps = steps; job.split = null; job.stageFails = {}; job.tries = {};
+        await fs.write(jp(name, 'State/plan.json'), JSON.stringify(r.plan, null, 1));
+        await writeProgress(job);
+        await logEv(name, 'split-ok', { steps: r.plan.steps.length });
+        return 'next';
+      }
+      job.tries = job.tries || {};
+      job.tries.split = (job.tries.split || 0) + (counted ? 1 : 0);
+      job.error = 'Pecahan belum valid: ' + r.err;
+      if (job.tries.split >= MAX_TRIES) { job.split = null; return fail(job, 'Tahap gagal dipecah: ' + r.err); }
+      return 'next';
     }
-    if (saved) await logEv(name, 'files', { tag, saved, got: st.got.length, of: cur.step.outputs.length });
-    if (cur.step.outputs.every((p) => st.got.includes(p))) {
+
+    // ---- Tahap: berhasil kalau zip hasil sudah diunduh ----
+    const st = job.steps[cur.step.id] = job.steps[cur.step.id] || { status: 'pending', got: [] };
+    let got = false;
+    try { got = await takeZip(job, cur.step, res); } catch (e) { await logEv(name, 'zip-err', { msg: String((e && e.message) || e) }); }
+    if (got) {
       st.status = 'done'; st.doneAt = Date.now(); st.accountId = a.id;
       const note = RC.extractState(text);
       if (note) st.note = note;
+      job.stageFails[cur.step.id] = [];
+      countDone(job, a);
       await writeProgress(job);
-      await logEv(name, 'step-done', { tag, account: a.name });
+      await logEv(name, 'step-done', { tag, account: a.name, ms: st.ms || 0 });
       return 'next';
     }
-    if (counted) {
+
+    // Tidak ada zip. Kalau prompt sudah terkirim, ini tahap yang gagal di akun ini (jatah terbuang).
+    if (res.sent) {
+      const list = job.stageFails[cur.step.id] = job.stageFails[cur.step.id] || [];
+      list.push(a.id);
+      await logEv(name, 'stage-fail', { tag, account: a.name, n: list.length, state });
+      // Anti-buang akun: gagal di 2 akun berbeda berturut-turut -> berhenti, jangan ke akun ketiga
+      if (RC.shouldStopStage(list)) {
+        job.split = { index: cur.index, why: `${tag} gagal di 2 akun berturut-turut (${state})`, go: false };
+        return fail(job, `Tahap ${tag} gagal di 2 akun berturut-turut tanpa zip. Berhenti supaya akun lain tidak terbuang. Saran: ketuk "✂ Pecah tahap" agar tahap ini dibagi lebih kecil.`);
+      }
+    }
+    if (state !== 'limit') {
       job.tries = job.tries || {};
       job.tries[tag] = (job.tries[tag] || 0) + 1;
-      const missing = cur.step.outputs.filter((p) => !st.got.includes(p));
-      job.error = `Langkah ${tag} belum lengkap, kurang: ${missing.join(', ')}`;
-      await logEv(name, 'incomplete', { tag, missing, try: job.tries[tag] });
-      if (job.tries[tag] >= MAX_TRIES) return fail(job, `Langkah ${tag} gagal ${MAX_TRIES}x, file kurang: ${missing.join(', ')}`);
+      job.error = `Tahap ${tag} selesai dijawab tapi zip tidak terunduh${res.cards ? ' (' + String(res.cards).slice(0, 120) + ')' : ''}`;
+      await logEv(name, 'no-zip', { tag, try: job.tries[tag] });
+      if (job.tries[tag] >= MAX_TRIES) return fail(job, `Tahap ${tag}: zip tidak terunduh ${MAX_TRIES}x. ${job.error}`);
     }
     return 'next';
   }
@@ -348,6 +478,60 @@
     await logEv(job.name, 'failed', { msg });
     await notifyNow(`Proyek "${job.name}" gagal`, msg, job.name);
     return 'stop';
+  }
+
+  // Jalur manual: lampiran otomatis gagal. Browser aplikasi dibuka di chat baru, lampiran sudah disiapkan: user cukup ketuk "+" lalu pilih
+  // "Tambah file" (apa pun yang dipilih, aplikasi menjawab pemilih file dengan zip tahap sebelumnya), kirim prompt (sudah disalin), tunggu selesai,
+  // lalu ketuk "Ambil hasil" di kartu proyek.
+  async function manual(job, cur, a, why) {
+    job.status = 'waiting_manual'; job.error = why;
+    job.manual = { tag: cur.kind === 'step' ? cur.step.id : cur.kind, accountId: a.id };
+    await logEv(job.name, 'manual', { why });
+    try {
+      const prompt = await promptFor(job, cur);
+      const up = await attachmentsFor(job, cur);
+      await g().setUploads({ uploads: up });
+      await openAccount(a, prompt, CLAUDE_URL, false);
+    } catch (e) { await logEv(job.name, 'manual-err', { msg: String((e && e.message) || e) }); }
+    await notifyNow(`Proyek "${job.name}" butuh bantuan`, 'Lampiran otomatis gagal. Ikuti langkah di browser aplikasi.', job.name);
+    return 'stop';
+  }
+
+  // Ambil zip dari chat terakhir di browser aplikasi (setelah jalur manual selesai)
+  async function collectManual(name) {
+    if (running) { toast('Ada proyek yang sedang berjalan.'); return; }
+    const job = await loadJob(name);
+    if (!job || !job.plan) { toast('Rencana belum ada.'); return; }
+    const cur = curStep(job);
+    if (!cur || cur.kind !== 'step') { toast('Tidak ada tahap yang menunggu.'); return; }
+    let url = '';
+    try { url = (await g().lastChatUrl()).url || ''; } catch (_) {}
+    if (!CHAT_RE.test(url)) { toast('Belum ada chat yang terbaca. Buka dulu chat tahap ini di browser aplikasi.', 6000); return; }
+    const acc = accounts.find((x) => x.id === (job.manual && job.manual.accountId)) || accounts[0];
+    checking = true;
+    let res;
+    try { res = await g().bait({ accountId: acc.id, url, mode: 'collect', expect: cur.step.zip, timeoutMs: 120000 }); }
+    catch (e) { res = { state: 'fail', text: 'why:error ' + ((e && e.message) || e) }; }
+    finally { checking = false; }
+    let ok = false;
+    try { ok = await takeZip(job, cur.step, res); } catch (_) {}
+    if (ok) {
+      job.steps[cur.step.id] = { status: 'done', got: [], doneAt: Date.now(), accountId: acc.id, ms: (job.steps[cur.step.id] || {}).ms || 0 };
+      job.status = 'queued'; job.error = ''; job.manual = null; job.stageFails = {};
+      await writeProgress(job); await saveJob(job); await logEv(name, 'step-done', { tag: cur.step.id, account: acc.name, via: 'manual' });
+      toast('Zip diambil. Ketuk Lanjut untuk tahap berikutnya.', 6000);
+    } else toast('Zip belum terunduh: ' + ((typeof baitWhy === 'function' && baitWhy(res.text)) || res.state || ''), 8000);
+    await refreshJobs();
+  }
+
+  // Pecah tahap yang gagal di 2 akun menjadi tahap lebih kecil (satu balasan teks berisi JSON), lalu lanjut seperti biasa
+  async function splitStage(name) {
+    const job = await loadJob(name);
+    if (!job || !job.split) { toast('Tidak ada tahap yang perlu dipecah.'); return; }
+    if (job.plan.steps.length >= maxStages()) { toast(`Sudah ${job.plan.steps.length} tahap (batas ${maxStages()}). Naikkan batas di Pengaturan estafet, atau tunggu reset / pakai akun berbayar.`, 8000); return; }
+    job.split.go = true; job.status = 'queued'; job.error = ''; job.stageFails = {};
+    await saveJob(job);
+    await runJob(name);
   }
 
   // ---------- Proyek: buat, hapus, ekspor ----------
@@ -461,14 +645,18 @@
     const done = j.plan ? j.plan.steps.filter((s) => (j.steps[s.id] || {}).status === 'done').length : 0;
     const cur = j.plan ? j.plan.steps.find((s) => (j.steps[s.id] || {}).status !== 'done') : null;
     const info = [];
-    if (j.plan) info.push(`Langkah ${done}/${total}${cur ? ` · berikutnya: ${cur.title}` : ''}`);
+    if (j.plan) info.push(`Tahap ${done}/${total}${cur ? ` · berikutnya: ${cur.title}` : ''}`);
     else info.push('Rencana belum dibuat');
+    { const m = RC.measure(j.stats); if (m.known) info.push(`Jatah terukur: ±${m.avg.toFixed(1)} tahap per akun (${m.n} akun limit)`); }
+    info.push(...RC.timeLines(j, Date.now()));
     if (j.lastAccount) info.push(`Akun terakhir: ${shortName(j.lastAccount)}`);
     if (j.error && j.status !== 'done') info.push(j.error);
     const bar = el('div', { class: 'rbar' }, el('i', { style: `width:${total ? Math.round((done / total) * 100) : 0}%` }));
     const btns = [];
     if (isRun) btns.push(el('button', { type: 'button', class: 'btn-g rb', text: '■ Batal', onclick: () => cancelRun() }));
     else if (j.status !== 'done') btns.push(el('button', { type: 'button', class: 'btn sm rb', text: j.plan || j.status !== 'queued' ? '▶ Lanjut' : '▶ Mulai', onclick: () => runJob(j.name) }));
+    if (!isRun && j.split && j.status === 'failed') btns.push(el('button', { type: 'button', class: 'btn sm rb', text: '✂ Pecah tahap', onclick: () => splitStage(j.name) }));
+    if (!isRun && j.status === 'waiting_manual') btns.push(el('button', { type: 'button', class: 'btn sm rb', text: '📥 Ambil hasil', onclick: () => collectManual(j.name) }));
     btns.push(
       el('button', { type: 'button', class: 'btn-g rb', text: '📄 Log', onclick: () => showLog(j.name) }),
       el('button', { type: 'button', class: 'btn-g rb', text: '⬇ Hasil', onclick: () => exportProject(j.name) }),
@@ -499,10 +687,12 @@
 
   async function showLog(name) {
     const t = (await fs.read(jp(name, 'State/log.jsonl'))) || '';
+    const tl = RC.timeLines(await loadJob(name), Date.now());
     const rows = t.split('\n').filter(Boolean).slice(-40).reverse().map((l) => {
       try {
         const o = JSON.parse(l);
         const { t: at, ev, ...rest } = o;
+        for (const k of ['ms', 'total', 'work', 'wait']) if (typeof rest[k] === 'number') { rest[k] = RC.fmtDur(rest[k]); }
         const d = new Date(at);
         const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         return `${hm} ${ev} ${Object.keys(rest).length ? JSON.stringify(rest) : ''}`;
@@ -510,7 +700,7 @@
     });
     const m = modal(
       el('b', { text: `Log: ${name}` }),
-      el('pre', { class: 'rlog', text: rows.join('\n') || 'Belum ada catatan.' }),
+      el('pre', { class: 'rlog', text: (tl.length ? tl.join('\n') + '\n\n' : '') + (rows.join('\n') || 'Belum ada catatan.') }),
       el('button', { type: 'button', class: 'btn sm', text: 'Tutup', onclick: () => m.remove() }),
     );
   }
@@ -576,6 +766,85 @@
     );
   }
 
+  // ---------- Uji sebelum dipakai penuh ----------
+  // (a) Unggah: lampirkan file uji ke chat baru lewat sentuhan asli + onFilePrompt, TANPA mengirim apa pun.
+  // (b) Unduh: buka chat yang punya kartu zip, klik ikon unduh, lihat apakah zip masuk (nama, ukuran, awalan PK).
+  async function testTransfer(kind, accountId, url, out) {
+    if (!ready()) { out('Butuh APK versi terbaru.'); return; }
+    if (running || (typeof checking !== 'undefined' && checking)) { out('Ada proses lain yang berjalan. Tunggu dulu.'); return; }
+    checking = true;
+    let res;
+    try {
+      if (kind === 'up') {
+        await fs.write('_test/uji-unggah.zip', 'PK-uji-unggah: ini bukan zip sungguhan, hanya file uji.');
+        out('Membuka chat baru di belakang layar, menekan "+", memilih file uji...');
+        res = await g().bait({ accountId, url: CLAUDE_URL, mode: 'uploadtest', uploads: ['_test/uji-unggah.zip'], timeoutMs: 120000 });
+      } else {
+        if (!CHAT_RE.test(url)) { out('Alamat harus berbentuk https://claude.ai/chat/... (chat yang punya kartu zip).'); return; }
+        out('Membuka chat, mencari kartu zip, mengklik unduh...');
+        res = await g().bait({ accountId, url, mode: 'collect', expect: '', timeoutMs: 120000 });
+      }
+    } catch (e) { res = { state: 'fail', text: 'why:error ' + ((e && e.message) || e) }; }
+    finally { checking = false; }
+    if (res.error) { out('Gagal: ' + (res.error === 'busy' ? 'sesi tersembunyi sedang dipakai.' : res.error)); return; }
+    const lines = [];
+    if (kind === 'up') {
+      lines.push(res.state === 'uploaded' ? 'BERHASIL: file uji terlampir di chat baru (tidak ada yang dikirim).' : 'GAGAL: ' + String(res.text || res.state).slice(0, 400));
+      lines.push('Tampilan sesi: ' + (res.view || '?') + (res.view === 'none' ? ' (tanpa tampilan tersembunyi, sentuhan asli tidak bisa dikirim: beri izin "Tampil di atas aplikasi lain")' : ''));
+    } else {
+      const dl = Array.isArray(res.downloads) ? res.downloads : [];
+      if (res.state === 'collected' && dl.length) {
+        for (const d of dl) lines.push(`BERHASIL: ${d.name} · ${Math.round(d.size / 1024)} KB · ${d.zip ? 'zip valid (PK)' : 'BUKAN zip'}`);
+        const first = dl.find((d) => d.zip);
+        if (first) { try { const r = await g().projExport({ path: first.path, name: 'uji-' + first.name }); lines.push('Disalin ke ' + (r.where || 'Download')); } catch (_) {} }
+        for (const d of dl) await fs.del(d.path).catch(() => {});
+      } else lines.push('GAGAL: ' + String(res.text || res.state).slice(0, 500));
+    }
+    if (res.cards) lines.push('Catatan selector: ' + String(res.cards).slice(0, 500));
+    if (res.diag) lines.push('Diagnosa: ' + String(res.diag).slice(0, 300));
+    out(lines.join('\n'));
+  }
+
+  function transferForm() {
+    const sel = el('select', { class: 'tsel' }, ...accounts.map((a) => el('option', { value: a.id, text: shortName(a.name) })));
+    const urlIn = el('input', { placeholder: 'Uji unduh: tempel https://claude.ai/chat/... (chat dengan kartu zip)', autocomplete: 'off' });
+    const outEl = el('pre', { class: 'rlog', text: 'Uji (a) unggah dan (b) unduh. Keduanya memakai akun yang dipilih. Jalankan dulu sebelum proyek besar.' });
+    const m = modal(
+      el('b', { text: 'Uji file: unggah dan unduh' }), sel, urlIn, outEl,
+      el('div', { class: 'rbtns' },
+        el('button', { type: 'button', class: 'btn sm rb', text: '(a) Uji unggah', onclick: () => testTransfer('up', sel.value, '', (t) => { outEl.textContent = t; }) }),
+        el('button', { type: 'button', class: 'btn sm rb', text: '(b) Uji unduh', onclick: () => testTransfer('down', sel.value, urlIn.value.trim(), (t) => { outEl.textContent = t; }) }),
+      ),
+      el('button', { type: 'button', class: 'btn-g rb', text: 'Tutup', onclick: () => m.remove() }),
+    );
+  }
+
+  function settingsForm() {
+    if (typeof settings === 'undefined') return;
+    const mx = el('input', { type: 'number', min: '1', max: '30', value: String(settings.maxStages || 10), class: 'tsel' });
+    const mk = (label, key) => {
+      const cb = el('input', { type: 'checkbox' });
+      cb.checked = !!settings[key];
+      return { cb, row: el('label', { class: 'hint2' }, cb, ' ' + label) };
+    };
+    const w = mk('Jalankan tahap hanya saat tersambung Wi-Fi', 'relayWifi');
+    const c = mk('Jalankan tahap hanya saat sedang mengisi daya', 'relayCharge');
+    const m = modal(
+      el('b', { text: 'Pengaturan estafet' }),
+      el('div', { class: 'hint2', text: 'Maksimal tahap per proyek (bawaan 10, tahap dijalankan satu per satu):' }), mx, w.row, c.row,
+      el('div', { class: 'hint2', text: 'Saat menunggu reset limit tidak ada polling: hanya alarm sistem dan notifikasi persisten.' }),
+      el('div', { class: 'rbtns' },
+        el('button', { type: 'button', class: 'btn-g rb', text: 'Batal', onclick: () => m.remove() }),
+        el('button', { type: 'button', class: 'btn sm rb', text: 'Simpan', onclick: () => {
+          settings.maxStages = RC.clampSteps(mx.value);
+          settings.relayWifi = w.cb.checked; settings.relayCharge = c.cb.checked;
+          if (typeof saveSettings === 'function') saveSettings();
+          m.remove(); toast('Pengaturan estafet disimpan.');
+        } }),
+      ),
+    );
+  }
+
   function openDrawer() { if (!drawer) return; refreshJobs(); backdrop.classList.add('show'); drawer.classList.add('open'); }
   function closeDrawer() { if (!drawer) return; backdrop.classList.remove('show'); drawer.classList.remove('open'); }
 
@@ -615,19 +884,25 @@
         if (x.kind === 'relay' && x.project) runJob(x.project);
       });
     } catch (_) {}
-    // Job yang terputus karena aplikasi ditutup: tandai supaya jelas. Job yang menunggu limit: pasang lagi pewaktu dan notifikasinya.
+    // Alarm reset berbunyi saat aplikasi hidup
+    try { if (g() && g().addListener) g().addListener('relayWake', (ev) => { if (ev && ev.project) runJob(ev.project); }); } catch (_) {}
+    // Job yang terputus karena aplikasi dimatikan sistem: status tersimpan di disk, jadi lanjut dari tahap yang belum punya zip.
+    // Job yang menunggu limit: pasang lagi pewaktu dan alarmnya.
     const names = (await fs.dirs('')).filter((n) => !n.startsWith('_'));
+    let launch = '';
+    try { launch = ((await g().takeLaunch()) || {}).project || ''; } catch (_) {}
     for (const n of names) {
       const j = await loadJob(n);
       if (!j) continue;
-      if (j.status === 'running') { j.status = 'queued'; j.error = 'Terputus (aplikasi tertutup). Ketuk Lanjut.'; await saveJob(j); }
-      else if (j.status === 'waiting_limit') armWake(j);
+      if (j.status === 'running') { if (j.timer) { j.timer.mode = ''; j.timer.since = 0; } j.status = 'queued'; j.error = 'Terputus (aplikasi dimatikan sistem). Dilanjutkan dari tahap yang belum selesai.'; await saveJob(j); if (n === launch || j.autoResume) launch = launch || n; }
+      else if (j.status === 'waiting_limit' || j.status === 'waiting_cond') armWake(j);
     }
     await refreshJobs();
+    if (launch) setTimeout(() => runJob(launch), 1500);
   }
 
   window.Relay = {
-    runJob, createProject, refreshJobs, dumpChat, markLimit,
+    runJob, createProject, refreshJobs, dumpChat, markLimit, splitStage, collectManual, transferForm, settingsForm, testTransfer,
     // dipakai halaman estafet (chat.js)
     ready, fs, loadJob, saveJob, modal, newProjectForm, dumpForm, showLog, exportProject, deleteProject, cancelRun, armWake,
     isRunning: (n) => !!(running && (!n || running.name === n)),
