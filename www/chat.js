@@ -472,6 +472,8 @@
     const t = e.touches[0];
     if (swipeBlocked(e.target)) return;
     const top = topPage();
+    // Di atas banner akun, geser ke kiri = hapus akun (app.js), bukan buka daftar proyek. Buka daftar proyek: geser di luar banner atau dari tepi kanan.
+    if (!top && e.target.closest && e.target.closest('.acc') && t.clientX < window.innerWidth - 24) return;
     if (!top) sw = { x: t.clientX, y: t.clientY, mode: 'open', locked: false, w: window.innerWidth, p: null };
     else if (t.clientX <= EDGE || (e.target.closest && e.target.closest('.cphead'))) sw = { x: t.clientX, y: t.clientY, mode: 'close', locked: false, w: window.innerWidth, p: top };
   }, { passive: true });
