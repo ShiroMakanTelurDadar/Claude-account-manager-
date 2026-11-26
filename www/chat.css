@@ -74,3 +74,23 @@ html[data-theme="lite"] .cpmsg.wait { animation: none; }
 .cainfo { display: flex; flex-direction: column; min-width: 0; }
 .cainfo b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cainfo small { font-size: 10px; color: var(--muted); }
+
+/* Estafet: kepala (pilih proyek, aksi), progres, gelembung rencana, akun di luar pool */
+.cphead { gap: 6px; }
+.cpsel { flex: 1; min-width: 0; height: 38px; padding: 0 8px; border-radius: 10px; font-size: 13px; font-weight: 700; color: inherit; border: 1px solid var(--line); background: rgba(var(--ink-rgb), .6); }
+.cpact { flex: none; width: 38px; height: 38px; border-radius: 10px; font-size: 15px; font-weight: 800; background: var(--grad); color: var(--on-grad); }
+.cpact.stop { background: #f87171; color: #fff; }
+.cpact:disabled { opacity: .4; }
+.cnew:disabled { opacity: .4; }
+.cpinfo { padding: 6px 12px 7px; border-bottom: 1px solid var(--line); }
+.cpbar { margin-bottom: 4px; }
+.cpstat { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cpmsg.sys.warn { color: #fca5a5; background: rgba(248, 113, 113, .1); border-color: rgba(248, 113, 113, .3); }
+.cpmsg.plan .cmtext { font-size: 12.5px; }
+.cpmsg.sys { text-align: left; align-self: stretch; }
+.cacc.out { opacity: .5; }
+.cpmsg.sys:not(.warn) { padding: 2px 6px; font-size: 11.5px; color: var(--muted); background: transparent; border-color: transparent; }
+
+/* Log proyek di bawah List akun */
+.cpanel .caccs { max-height: 26vh; }
+.cplog { margin: 0; padding: 6px; max-height: 30vh; overflow: auto; font: 10px/1.4 monospace; white-space: pre-wrap; word-break: break-all; color: var(--muted); -webkit-user-select: text; user-select: text; }
