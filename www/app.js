@@ -1826,6 +1826,72 @@ async function doContinue(a) {
 }
 
 // ---------- Kartu akun ----------
+// ---------- Geser banner akun ke kiri = hapus ----------
+const SW_OPEN = 88;          // px: lebar lapisan merah saat terbuka
+let swOpenRoot = null;       // satu banner saja yang boleh terbuka
+function trashIcon() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const s = document.createElementNS(ns, 'svg');
+  for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) s.setAttribute(k, v);
+  for (const d of ['M4 7h16', 'M9 7V4.5h6V7', 'M6.5 7l.8 12.5h9.4L17.5 7', 'M10 11v5.5', 'M14 11v5.5']) {
+    const p = document.createElementNS(ns, 'path');
+    p.setAttribute('d', d);
+    s.append(p);
+  }
+  return s;
+}
+function swSet(root, px, snap) {
+  root.classList.toggle('swsnap', !!snap);
+  root.style.setProperty('--sw', px + 'px');
+}
+function swClose(root) {
+  if (!root) return;
+  swSet(root, 0, true);
+  root.classList.remove('swopen');
+  if (swOpenRoot === root) swOpenRoot = null;
+}
+function attachSwipeDelete(root) {
+  let st = null;
+  root.addEventListener('touchstart', (e) => {
+    st = null;
+    if (e.touches.length !== 1 || e.target.closest('input, textarea, select')) return;
+    const t = e.touches[0];
+    if (swOpenRoot && swOpenRoot !== root) swClose(swOpenRoot);
+    st = { x: t.clientX, y: t.clientY, base: root.classList.contains('swopen') ? SW_OPEN : 0, locked: false, sw: 0 };
+  }, { passive: true });
+  root.addEventListener('touchmove', (e) => {
+    if (!st) return;
+    const t = e.touches[0];
+    const dx = t.clientX - st.x, dy = t.clientY - st.y;
+    if (!st.locked) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { st = null; return; }   // gerak tegak = gulir daftar
+      if (Math.abs(dx) < 10 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (st.base === 0 && dx > 0) { st = null; return; }                            // belum terbuka: hanya ke kiri
+      st.locked = true;
+      root.classList.remove('swsnap');
+    }
+    st.sw = Math.min(SW_OPEN + 28, Math.max(0, st.base - dx));
+    swSet(root, st.sw);
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+  const end = () => {
+    if (!st || !st.locked) { st = null; return; }
+    const open = st.sw > SW_OPEN / 2;
+    st = null;
+    swSet(root, open ? SW_OPEN : 0, true);
+    root.classList.toggle('swopen', open);
+    swOpenRoot = open ? root : (swOpenRoot === root ? null : swOpenRoot);
+  };
+  root.addEventListener('touchend', end, { passive: true });
+  root.addEventListener('touchcancel', end, { passive: true });
+  // Saat terbuka, ketukan di banner hanya menutupnya (tidak menjalankan tombol di dalamnya)
+  root.addEventListener('click', (e) => {
+    if (root.classList.contains('swopen') && !e.target.closest('.swdel')) { e.stopPropagation(); e.preventDefault(); swClose(root); }
+  }, true);
+}
+// Ketuk di luar banner yang terbuka = tutup
+document.addEventListener('touchstart', (e) => { if (swOpenRoot && !swOpenRoot.contains(e.target)) swClose(swOpenRoot); }, { passive: true, capture: true });
+
 function buildCard(a, index) {
   const r = {};
 
@@ -1878,16 +1944,6 @@ function buildCard(a, index) {
   r.name = el('input', {
     class: 'dname', placeholder: 'Nama akun', autocomplete: 'off',
     onchange: (e) => { a.name = e.target.value.trim() || a.name; commit(); },
-  });
-  const del = el('button', {
-    type: 'button', class: 'btn-d', text: 'Hapus',
-    onclick: () => {
-      if (confirm(`Hapus akun "${a.name}"?`)) {
-        accounts = accounts.filter((x) => x.id !== a.id);
-        openIds.delete(a.id);
-        commit();
-      }
-    },
   });
 
   r.when = el('input', {
@@ -1944,7 +2000,7 @@ function buildCard(a, index) {
 
   const detail = el('div', { class: 'dwrap' }, el('div', { class: 'dinner' }, el('div', { class: 'dpad' },
     el('button', { type: 'button', class: 'connect', text: '🔗 Hubungkan akun ke browser aplikasi', onclick: () => connectAccount(a) }),
-    el('div', { class: 'drow' }, r.name, del),
+    el('div', { class: 'drow' }, r.name),
     el('div', { class: 'field' },
       el('label', { text: 'Link chat akun ini (dibuka oleh 🔗 dan Continue)' }),
       r.chat,
@@ -1985,7 +2041,20 @@ function buildCard(a, index) {
     ),
   )));
 
-  const root = el('section', { class: 'acc enter' }, r1, r2, detail);
+  // Hapus akun: geser banner ke kiri, muncul lapisan merah bergambar tong sampah. Ketuk lapisan itu lalu konfirmasi.
+  const swdel = el('button', {
+    type: 'button', class: 'swdel', 'aria-label': `Hapus akun ${a.name}`,
+    onclick: (e) => {
+      e.stopPropagation();
+      if (confirm(`Hapus akun "${a.name}"?`)) {
+        accounts = accounts.filter((x) => x.id !== a.id);
+        openIds.delete(a.id);
+        commit();
+      } else swClose(root);
+    },
+  }, trashIcon());
+  const root = el('section', { class: 'acc enter' }, r1, r2, detail, swdel);
+  attachSwipeDelete(root);
   root.style.setProperty('--i', index);
   root._r = r;
   root.addEventListener('animationend', (e) => {
