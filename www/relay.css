@@ -49,8 +49,18 @@
   margin: 0; padding: 8px; max-height: 46vh; overflow: auto; border-radius: 10px; font: 11px/1.45 monospace;
   white-space: pre-wrap; word-break: break-all; color: var(--muted); background: rgba(var(--ink-rgb), .7); border: 1px solid var(--line);
 }
-.rpool { display: flex; flex-direction: column; gap: 4px; }
-.rpick { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 13px; }
-.rpick label { display: flex; align-items: center; gap: 4px; min-width: 0; word-break: break-all; }
-.rmv { padding: 2px 9px; font-size: 12px; }
 .rerr { color: #fca5a5; min-height: 1em; }
+
+/* Pilih akun proyek baru: gelembung, ketuk = centang. Angka = urutan prioritas. */
+.rpool { display: flex; flex-direction: column; gap: 6px; }
+.rchip {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border-radius: 999px; text-align: left;
+  color: inherit; font-size: 14px; border: 1.5px solid var(--line); background: rgba(var(--ink-rgb), .55);
+}
+.rchip.on { border-color: var(--sky); background: rgba(var(--sky-rgb), .14); }
+.rnum {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 12px; font-weight: 800; border: 1.5px solid var(--line); color: var(--on-grad);
+}
+.rchip.on .rnum { background: var(--grad); border-color: transparent; }
+.rnm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
