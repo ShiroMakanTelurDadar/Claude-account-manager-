@@ -18,6 +18,7 @@
   const DUMP_TIMEOUT = 120000;
   const MAX_TRIES = 3;                   // langkah yang selesai dijawab tapi file hasilnya tetap tidak lengkap: menyerah setelah ini
   const MAX_FAILS = 2;                   // gagal berturut-turut di satu akun sebelum akun itu dilewati
+  const KEEP_CHATS = 2;                  // chat estafet yang disimpan per akun di claude.ai; yang lebih lama dihapus
   const RAW_KEEP = 8;                    // jumlah balasan mentah terakhir yang disimpan per proyek
 
   const STATUS_LABEL = {
@@ -82,6 +83,35 @@
     a.resetAt = (future || new Date(Date.now() + 5 * 3600e3)).toISOString();
     a.resetSrc = future ? 'auto' : 'default';
     commit();
+  }
+
+  // ---------- Hapus chat lama ----------
+  // Tiap langkah membuat chat baru di claude.ai. Paket serah-terima dibuat dari penyimpanan aplikasi (progress.md, file Out), bukan dari
+  // chat lama, jadi chat yang sudah selesai tidak dibaca lagi. Yang disimpan hanya KEEP_CHATS terbaru per akun, sisanya dihapus lewat sesi tersembunyi.
+  // Daftar chat disimpan di _chats/registry.json: { idAkun: [{url, at, project, fails}] }.
+  const CHAT_RE = /^https:\/\/claude\.ai\/chat\/[0-9a-f-]{36}/i;
+  async function loadReg() { try { const t = await fs.read('_chats/registry.json'); return t ? JSON.parse(t) : {}; } catch (_) { return {}; } }
+  async function trimChats(run, a, url, project) {
+    const G = g();
+    const reg = await loadReg();
+    const list = reg[a.id] = reg[a.id] || [];
+    const m = CHAT_RE.exec(url || '');
+    if (m && !list.some((x) => x.url === m[0])) list.push({ url: m[0], at: Date.now(), project, fails: 0 });
+    list.sort((x, y) => x.at - y.at);
+    while (list.length > KEEP_CHATS && !run.cancel) {
+      const old = list[0];
+      let dr;
+      try { dr = await G.bait({ accountId: a.id, url: old.url, mode: 'delete', timeoutMs: 150000 }); }
+      catch (e) { dr = { state: 'fail' }; }
+      if (dr.error === 'cancel' || dr.error === 'busy' || run.cancel) break;
+      if (dr.state === 'deleted') { list.shift(); await logEv(project, 'chat-del', { account: a.name }); continue; }
+      // Gagal (mis. chat sudah dihapus manual, atau halaman belum siap): coba lagi di langkah berikutnya, menyerah setelah 3 kali
+      old.fails = (old.fails || 0) + 1;
+      await logEv(project, 'chat-del-fail', { account: a.name, try: old.fails, why: typeof baitWhy === 'function' ? baitWhy(dr.text) : '' });
+      if (old.fails >= 3) { list.shift(); continue; }
+      break;
+    }
+    await fs.write('_chats/registry.json', JSON.stringify(reg));
   }
 
   // ---------- Prompt ----------
@@ -204,6 +234,7 @@
       }
       const verdict = await handleResult(job, cur, tag, a, res, skip, fails);
       await saveJob(job);
+      if (res.state !== 'loggedout') { try { await trimChats(run, a, res.url, name); } catch (_) {} }
       if (verdict === 'stop') { renderList(); return; }
     }
     if (run.cancel) {
