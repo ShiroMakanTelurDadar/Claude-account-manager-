@@ -1,10 +1,10 @@
-// Halaman estafet: kolom chat di kiri (alur proyek: brief, rencana, tiap langkah, balasan Claude), panel di kanan
-// (Cek akun, Pancing akun, Input file, Output file, List akun). Dibuka dengan geser ke kiri di halaman utama (list akun).
-// Panah bulat di pojok kolom chat, atau geser ke kanan dari tepi kiri, = kembali ke halaman utama.
+// Estafet: geser ke kiri di halaman utama (list akun) -> DAFTAR PROYEK (+ Proyek baru) -> ketuk satu proyek -> HALAMAN CHAT proyek itu:
+// kolom chat di kiri (brief, rencana, tiap langkah, balasan Claude), panel di kanan (Cek akun, Pancing akun, Input file, Output file, List akun, Log).
+// Panah bulat di pojok, tombol back Android, atau geser ke kanan dari tepi kiri = mundur satu halaman.
 //
 // Halaman ini hanya tampilan. Semua kerja estafet (rencana, langkah, ganti akun saat limit) tetap di relay.js, lewat window.Relay.
 //   Kolom chat  : dibangun dari In/brief.md, State/log.jsonl, dan balasan mentah State/raw/*.md proyek yang dipilih.
-//   Kotak ketik : tulis brief proyek baru, lalu ➤ membuka form proyek baru (nama + akun) dengan brief itu sudah terisi.
+//   Kotak ketik : tulis brief proyek (disimpan di In/brief.md). Hanya bisa sebelum rencana dibuat.
 //   Input file  : file teks di In/ proyek (selain brief.md). Ikut ke prompt rencana dan tiap langkah.
 //   Output file : file hasil di Out/ proyek. ⬇ menyalin ke folder Download.
 //   List akun   : semua akun. Yang bernomor = ada di pool proyek (urutan = prioritas). Ketuk = masuk / keluar pool (saat proyek tidak berjalan).
@@ -18,12 +18,13 @@
   const LOG_SHOW = 150;           // jumlah catatan log terakhir yang ditampilkan di kolom chat
 
   // ---------- Keadaan ----------
-  let page = null;
+  let page = null;           // halaman chat satu proyek
+  let listPage = null, listEl = null;   // halaman daftar proyek
   let curName = '';          // nama proyek yang dipilih
   let job = null;            // job.json proyek itu (salinan terbaru)
   let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
   let timer = null;
-  let selEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
+  let titleEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
   let msgsEl = null, inputEl = null, sendBtn = null;
   let inEl = null, outEl = null, accEl = null, fileIn = null, logEl = null;
   let logText = '', logMark = '';
@@ -120,7 +121,7 @@
       }
     }
     if (running()) kids.push(el('div', { class: 'cpmsg ai wait', text: `Bekerja${job && job.lastAccount ? ' di ' + shortName(job.lastAccount) : ''}... (balasan tampil setelah selesai)` }));
-    if (!kids.length) kids.push(el('div', { class: 'cmempty', text: 'Belum ada proyek.\nTulis brief di bawah lalu ➤,\natau pilih proyek di atas.' }));
+    if (!kids.length) kids.push(el('div', { class: 'cmempty', text: 'Tulis brief proyek di kolom chat bawah, lalu ➤.\nSetelah itu ketuk ▶ untuk mulai.' }));
     return kids;
   }
 
@@ -128,7 +129,7 @@
     if (!msgsEl) return;
     if (force) timeline = '';
     if (!rready()) { msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Fitur estafet hanya jalan di APK terbaru.' })); return; }
-    if (!curName) { timeline = ''; msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Belum ada proyek.\nTulis brief di bawah lalu ➤,\natau pilih proyek di atas.' })); return; }
+    if (!curName) { timeline = ''; msgsEl.replaceChildren(el('div', { class: 'cmempty', text: 'Pilih proyek dari daftar proyek.' })); return; }
     let kids = null;
     try { kids = await buildTimeline(); } catch (_) { return; }
     if (!kids) return;
@@ -137,31 +138,32 @@
     if (stick) msgsEl.scrollTop = msgsEl.scrollHeight;
   }
 
-  // ---------- Kepala: pilihan proyek, tombol aksi, progres ----------
+  // ---------- Kepala: judul proyek, tombol aksi, progres ----------
   function syncJob() {
     const jobs = (R() && R().getJobs && R().getJobs()) || [];
-    if (curName && !jobs.find((j) => j.name === curName)) curName = '';
-    if (!curName && jobs.length) curName = jobs[0].name;
     job = jobs.find((j) => j.name === curName) || null;
     return jobs;
   }
 
   function renderHead() {
-    if (!selEl) return;
-    const jobs = syncJob();
-    selEl.replaceChildren(...(jobs.length ? jobs.map((j) => el('option', { value: j.name, text: j.name, selected: j.name === curName ? 'selected' : null })) : [el('option', { value: '', text: 'Belum ada proyek' })]));
-    selEl.value = curName;
+    if (!titleEl) return;
+    syncJob();
+    titleEl.textContent = curName || '';
     const run = running();
     const has = !!job;
     actBtn.disabled = !has || (!run && job.status === 'done');
     actBtn.textContent = run ? '■' : '▶';
     actBtn.setAttribute('aria-label', run ? 'Batalkan proyek' : 'Mulai / lanjutkan proyek');
     actBtn.classList.toggle('stop', run);
-    moreBtn.disabled = !has && !rready();
+    moreBtn.disabled = !has;
+    const locked = !!(job && job.plan);
+    inputEl.disabled = locked;
+    inputEl.placeholder = locked ? 'rencana sudah dibuat' : 'kolom chat (brief proyek)';
+    sendBtn.disabled = locked;
     const total = job && job.plan ? job.plan.steps.length : 0;
     const done = job && job.plan ? job.plan.steps.filter((s) => (job.steps[s.id] || {}).status === 'done').length : 0;
     barEl.firstChild.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
-    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}` : (rready() ? 'Tidak ada proyek' : 'Butuh APK terbaru');
+    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}` : (rready() ? '' : 'Butuh APK terbaru');
   }
 
   function onAct() {
@@ -177,12 +179,12 @@
     const m = r.modal(
       el('b', { text: curName ? `Proyek: ${curName}` : 'Menu estafet' }),
       el('div', { class: 'rbtns' },
-        el('button', { type: 'button', class: 'btn sm rb', text: '+ Proyek baru', onclick: () => { m.remove(); r.newProjectForm(); } }),
+        el('button', { type: 'button', class: 'btn sm rb', text: '+ Proyek baru', onclick: () => { m.remove(); newProject(); } }),
       ),
       ...(curName ? [el('div', { class: 'rbtns' },
         el('button', { type: 'button', class: 'btn-g rb', text: '📄 Log', onclick: () => { m.remove(); r.showLog(curName); } }),
         el('button', { type: 'button', class: 'btn-g rb', text: '⬇ Semua hasil', onclick: () => { m.remove(); r.exportProject(curName); } }),
-        el('button', { type: 'button', class: 'btn-g rb', text: '🗑 Hapus', onclick: async () => { m.remove(); await r.deleteProject(curName); refreshAll(true); } }),
+        el('button', { type: 'button', class: 'btn-g rb', text: '🗑 Hapus', onclick: async () => { m.remove(); const n = curName; await r.deleteProject(n); const still = (r.getJobs() || []).some((j) => j.name === n); if (!still) closeChat(false); } }),
       )] : []),
       el('div', { class: 'rbtns' },
         el('button', { type: 'button', class: 'btn-g rb', text: '🔬 Uji chat', onclick: () => { m.remove(); r.dumpForm(); } }),
@@ -191,15 +193,22 @@
     );
   }
 
-  // ---------- Kotak ketik: brief proyek baru ----------
-  function onSend() {
+  // ---------- Kotak ketik: brief proyek ----------
+  // Brief disimpan di In/brief.md. Teks berikutnya (sebelum rencana dibuat) ditambahkan di bawahnya.
+  async function onSend() {
     const t = inputEl.value.trim();
     if (!t) return;
-    const r = R();
     if (!rready()) { toast('Butuh APK versi terbaru (fitur estafet belum ada di APK ini).'); return; }
+    if (!curName || !job) { toast('Pilih proyek dulu.'); return; }
+    if (job.plan) { toast('Rencana sudah dibuat, brief tidak bisa diubah lagi.'); return; }
+    if (running()) { toast('Proyek sedang berjalan.'); return; }
+    const fs = R().fs;
+    const old = ((await fs.read(jp('In/brief.md'))) || '').trim();
+    await fs.write(jp('In/brief.md'), old ? old + '\n\n' + t : t);
     inputEl.value = '';
     autosize();
-    r.newProjectForm(t);
+    await renderMsgs(true);
+    toast('Brief disimpan. Ketuk ▶ untuk memulai.', 5000);
   }
 
   function autosize() {
@@ -344,45 +353,108 @@
     await renderMsgs(force);
   }
 
-  function onJobsChange() { if (page) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); } }
+  function onJobsChange() {
+    if (page && page.classList.contains('show')) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); }
+    if (listPage && listPage.classList.contains('show')) renderProjects();
+  }
   window.addEventListener('relaychange', onJobsChange);
 
-  function prepare() {
+  // ---------- Daftar proyek ----------
+  function projCard(j) {
+    const total = j.plan ? j.plan.steps.length : 0;
+    const done = j.plan ? j.plan.steps.filter((s) => (j.steps[s.id] || {}).status === 'done').length : 0;
+    const cur = j.plan ? j.plan.steps.find((s) => (j.steps[s.id] || {}).status !== 'done') : null;
+    const info = [];
+    if (j.plan) info.push(`Langkah ${done}/${total}${cur ? ` · berikutnya: ${cur.title}` : ''}`);
+    else info.push('Rencana belum dibuat');
+    if (j.lastAccount) info.push(`Akun terakhir: ${shortName(j.lastAccount)}`);
+    if (j.error && j.status !== 'done') info.push(j.error);
+    const run = !!(R() && R().isRunning && R().isRunning(j.name));
+    return el('div', { class: `ritem pcard ${j.status === 'failed' ? 'bad' : ''}`, role: 'button', tabindex: '0', onclick: () => openChat(j.name) },
+      el('div', { class: 'rtop' }, el('b', { class: 'rname', text: j.name }), el('span', { class: 'rbadge', text: run ? 'Berjalan' : R().statusText(j) })),
+      el('div', { class: 'rbar' }, el('i', { style: `width:${total ? Math.round((done / total) * 100) : 0}%` })),
+      ...info.map((t) => el('div', { class: 'hint2', text: t })));
+  }
+
+  function renderProjects() {
+    if (!listEl) return;
+    if (!rready()) { listEl.replaceChildren(el('div', { class: 'cmempty', text: 'Fitur estafet hanya jalan di APK terbaru.' })); return; }
+    const jobs = (R().getJobs && R().getJobs()) || [];
+    if (!jobs.length) { listEl.replaceChildren(el('div', { class: 'cmempty', text: 'Belum ada proyek.\nKetuk "+ Proyek baru".' })); return; }
+    listEl.replaceChildren(...jobs.map(projCard));
+  }
+
+  function newProject() {
+    const r = R();
+    if (!rready()) { toast('Butuh APK versi terbaru (fitur estafet belum ada di APK ini).'); return; }
+    r.newProjectForm((n) => openChat(n));
+  }
+
+  // ---------- Buka / tutup halaman ----------
+  const shown = (p) => !!(p && p.classList.contains('show'));
+  const topPage = () => (shown(page) ? page : shown(listPage) ? listPage : null);
+  function push(cam) { if (!(history.state && history.state.cam === cam)) { try { history.pushState({ cam }, ''); } catch (_) {} } }
+  function back(cam) { try { if (history.state && history.state.cam === cam) history.back(); } catch (_) {} }
+  function showPage(p) {
+    p.style.transform = '';
+    p.classList.remove('drag');
+    p.classList.add('show');
+    document.body.classList.add('chat-open');
+    clearInterval(timer);
+    timer = setInterval(tick, 2000);
+  }
+  function hidePage(p) {
+    p.style.transform = '';
+    p.classList.remove('drag', 'show');
+    if (!topPage()) { document.body.classList.remove('chat-open'); clearInterval(timer); }
+  }
+  function tick() {
+    if (shown(page)) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) refreshFiles(); }
+    if (shown(listPage)) renderProjects();
+  }
+
+  function prepareList() {
+    if (!listPage) buildList();
+    const r = R();
+    if (r && r.refreshJobs) r.refreshJobs().then(renderProjects).catch(() => {});
+    renderProjects();
+  }
+  function openList() { prepareList(); showPage(listPage); push('list'); }
+  function closeList(fromPop) {
+    if (!shown(listPage)) return;
+    hidePage(listPage);
+    if (!fromPop) back('list');
+  }
+
+  function openChat(n) {
     if (!page) build();
+    curName = n; job = null; timeline = ''; logMark = '';
     const r = R();
     if (r && r.refreshJobs) r.refreshJobs().then(() => { renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true); }).catch(() => {});
     renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true);
+    showPage(page);
+    push('chat');
+  }
+  function closeChat(fromPop) {
+    if (!shown(page)) return;
+    hidePage(page);
+    if (!fromPop) back('chat');
+    renderProjects();
   }
 
-  // ---------- Buka / tutup ----------
-  function open() {
-    prepare();
-    page.style.transform = '';
-    page.classList.remove('drag');
-    page.classList.add('show');
-    document.body.classList.add('chat-open');
-    if (!(history.state && history.state.cam === 'chat')) { try { history.pushState({ cam: 'chat' }, ''); } catch (_) {} }
-    clearInterval(timer);
-    timer = setInterval(() => { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) refreshFiles(); }, 2000);
-  }
-
-  function close(fromPop) {
-    if (!page || !page.classList.contains('show')) return;
-    page.style.transform = '';
-    page.classList.remove('drag', 'show');
-    document.body.classList.remove('chat-open');
-    clearInterval(timer);
-    if (!fromPop) { try { if (history.state && history.state.cam === 'chat') history.back(); } catch (_) {} }
-  }
-
-  window.addEventListener('popstate', () => close(true));
+  // Tombol back Android / riwayat: halaman paling atas ditutup
+  window.addEventListener('popstate', () => {
+    const cam = history.state && history.state.cam;
+    if (cam !== 'chat') closeChat(true);
+    if (cam !== 'list' && cam !== 'chat') closeList(true);
+  });
 
   // ---------- Geser ----------
-  // Halaman utama: geser ke kiri = buka halaman chat (halaman ikut mengikuti jari). Halaman chat: geser ke kanan dari tepi kiri
-  // atau dari baris atas kolom chat = kembali. Geser hanya dianggap kalau gerakannya jelas mendatar.
+  // Halaman utama: geser ke kiri = buka daftar proyek (halaman ikut mengikuti jari). Di daftar proyek atau halaman chat: geser ke kanan dari
+  // tepi kiri atau dari baris atas = mundur satu halaman. Geser hanya dianggap kalau gerakannya jelas mendatar.
   const EDGE = 36;       // px: lebar zona tepi kiri untuk geser kembali
   const START = 12;      // px: gerak minimal sebelum arah dikunci
-  let sw = null;         // {x, y, mode:'open'|'close', locked, w}
+  let sw = null;         // {x, y, mode:'open'|'close', locked, w, p}
 
   function swipeBlocked(t) {
     if (!t || !t.closest) return false;
@@ -396,10 +468,10 @@
     sw = null;
     if (e.touches.length !== 1) return;
     const t = e.touches[0];
-    const opened = !!(page && page.classList.contains('show'));
     if (swipeBlocked(e.target)) return;
-    if (!opened) sw = { x: t.clientX, y: t.clientY, mode: 'open', locked: false, w: window.innerWidth };
-    else if (t.clientX <= EDGE || (e.target.closest && e.target.closest('.cphead'))) sw = { x: t.clientX, y: t.clientY, mode: 'close', locked: false, w: window.innerWidth };
+    const top = topPage();
+    if (!top) sw = { x: t.clientX, y: t.clientY, mode: 'open', locked: false, w: window.innerWidth, p: null };
+    else if (t.clientX <= EDGE || (e.target.closest && e.target.closest('.cphead'))) sw = { x: t.clientX, y: t.clientY, mode: 'close', locked: false, w: window.innerWidth, p: top };
   }, { passive: true });
 
   document.addEventListener('touchmove', (e) => {
@@ -411,12 +483,12 @@
       if (Math.abs(dx) < START || Math.abs(dx) < Math.abs(dy) * 1.5) return;
       if ((sw.mode === 'open' && dx > 0) || (sw.mode === 'close' && dx < 0)) { sw = null; return; }
       sw.locked = true;
-      if (sw.mode === 'open') prepare();
-      page.classList.add('drag');
+      if (sw.mode === 'open') { prepareList(); sw.p = listPage; }
+      sw.p.classList.add('drag');
     }
     const w = sw.w;
     const x = sw.mode === 'open' ? Math.max(0, w + dx) : Math.min(w, Math.max(0, dx));
-    page.style.transform = `translateX(${x}px)`;
+    sw.p.style.transform = `translateX(${x}px)`;
     sw.dx = dx;
     if (e.cancelable) e.preventDefault();
   }, { passive: false });
@@ -425,10 +497,11 @@
     if (!sw || !sw.locked) { sw = null; return; }
     const s = sw; sw = null;
     const far = Math.abs(s.dx || 0) > s.w * 0.25;
-    page.classList.remove('drag');
-    page.style.transform = '';
-    if (s.mode === 'open') { if (far) open(); }
-    else if (far) close(false); else page.classList.add('show');
+    s.p.classList.remove('drag');
+    s.p.style.transform = '';
+    if (s.mode === 'open') { if (far) openList(); }
+    else if (far) { if (s.p === page) closeChat(false); else closeList(false); }
+    else s.p.classList.add('show');
   }
   document.addEventListener('touchend', endSwipe, { passive: true });
   document.addEventListener('touchcancel', endSwipe, { passive: true });
@@ -448,18 +521,18 @@
     outEl = el('div', { class: 'cflist' });
     accEl = el('div', { class: 'cflist caccs' });
 
-    selEl = el('select', { class: 'cpsel', 'aria-label': 'Proyek', onchange: (e) => { curName = e.target.value; timeline = ''; job = null; refreshAll(true); refreshFiles(); } });
+    titleEl = el('div', { class: 'cpsel cptit' });
     logEl = el('pre', { class: 'cplog', text: 'Belum ada proyek.' });
     actBtn = el('button', { type: 'button', class: 'cpact', text: '▶', onclick: onAct });
     moreBtn = el('button', { type: 'button', class: 'cnew', text: '⋯', 'aria-label': 'Menu estafet', onclick: onMore });
     barEl = el('div', { class: 'rbar cpbar' }, el('i', { style: 'width:0%' }));
     stEl = el('div', { class: 'cpstat', text: '' });
     msgsEl = el('div', { class: 'cpmsgs', 'aria-live': 'polite' });
-    inputEl = el('textarea', { class: 'cinput', rows: '1', placeholder: 'kolom chat', 'aria-label': 'Kolom chat: tulis brief proyek baru', autocomplete: 'off' });
+    inputEl = el('textarea', { class: 'cinput', rows: '1', placeholder: 'kolom chat (brief proyek)', 'aria-label': 'Kolom chat: tulis brief proyek baru', autocomplete: 'off' });
     inputEl.addEventListener('input', autosize);
     sendBtn = el('button', { type: 'button', class: 'btn sm csend', text: '➤', 'aria-label': 'Buat proyek baru dari brief ini', onclick: onSend });
 
-    const back = el('button', { type: 'button', class: 'cback', 'aria-label': 'Kembali ke halaman utama', onclick: () => close(false) },
+    const back = el('button', { type: 'button', class: 'cback', 'aria-label': 'Kembali ke halaman utama', onclick: () => closeChat(false) },
       (() => {
         const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2.4'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
@@ -470,7 +543,7 @@
       })());
 
     const chatCol = el('section', { class: 'cchat', 'aria-label': 'Estafet' },
-      el('div', { class: 'cphead' }, back, selEl, actBtn, moreBtn),
+      el('div', { class: 'cphead' }, back, titleEl, actBtn, moreBtn),
       el('div', { class: 'cpinfo' }, barEl, stEl),
       msgsEl,
       el('div', { class: 'cbar' }, inputEl, sendBtn));
@@ -485,9 +558,28 @@
       el('div', { class: 'cpanel' }, el('div', { class: 'cptitle' }, el('span', { text: 'Log proyek' }), el('button', { type: 'button', class: 'cfbtn add', text: '📋', 'aria-label': 'Salin log', onclick: copyLog })), logEl),
       fileIn);
 
-    page = el('div', { class: 'chatpage', role: 'dialog', 'aria-label': 'Halaman estafet' }, chatCol, side);
+    page = el('div', { class: 'chatpage cpchat', role: 'dialog', 'aria-label': 'Halaman chat proyek' }, chatCol, side);
     document.body.append(page);
   }
 
-  window.ChatPage = { open, close };
+  // Halaman daftar proyek: judul, + Proyek baru, kartu proyek
+  function buildList() {
+    const back = el('button', { type: 'button', class: 'cback', 'aria-label': 'Kembali ke halaman utama', onclick: () => closeList(false) },
+      (() => {
+        const sv = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        sv.setAttribute('viewBox', '0 0 24 24'); sv.setAttribute('fill', 'none'); sv.setAttribute('stroke', 'currentColor'); sv.setAttribute('stroke-width', '2.4'); sv.setAttribute('stroke-linecap', 'round'); sv.setAttribute('stroke-linejoin', 'round');
+        const pt = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pt.setAttribute('d', 'M19 12H5M11 6l-6 6 6 6');
+        sv.append(pt);
+        return sv;
+      })());
+    listEl = el('div', { class: 'cpmsgs cplist' });
+    const col = el('section', { class: 'cchat', 'aria-label': 'Daftar proyek' },
+      el('div', { class: 'cphead' }, back, el('div', { class: 'cpsel cptit', text: 'Proyek estafet' }), el('button', { type: 'button', class: 'btn sm cpnew', text: '+ Proyek baru', onclick: newProject })),
+      listEl);
+    listPage = el('div', { class: 'chatpage projpage', role: 'dialog', 'aria-label': 'Daftar proyek estafet' }, col);
+    document.body.append(listPage);
+  }
+
+  window.ChatPage = { open: openList, close: closeList };
 })();
