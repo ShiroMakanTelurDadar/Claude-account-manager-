@@ -7,6 +7,7 @@
   const MAX_OUTPUTS = 4;          // file per langkah
   const NEEDS_BUDGET = 60000;     // karakter: batas isi file Out yang disertakan di prompt satu langkah
   const SUMMARY_MAX = 1500;
+  const IN_BUDGET = 30000;        // karakter: batas isi file Input yang disertakan di prompt
   const BRIEF_MAX = 12000;
 
   // ---------- Path ----------
@@ -183,7 +184,14 @@
   // Prompt satu langkah. Berisi paket serah-terima: ringkasan proyek, daftar progres, file yang dibutuhkan, lalu instruksi langkah.
   // got = path hasil yang sudah ada untuk langkah ini (dari percobaan sebelumnya): tidak ditulis ulang.
   function buildStepPrompt(o) {
-    const { plan, step, index, progress, needFiles, got, brief } = o;
+    const { plan, step, index, progress, needFiles, got, brief, inFiles } = o;
+    let inUsed = 0;
+    const ins = [];
+    for (const f of inFiles || []) {
+      if (inUsed + f.content.length > IN_BUDGET) continue;
+      inUsed += f.content.length;
+      ins.push(`### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``);
+    }
     const missing = step.outputs.filter((p) => !(got || []).includes(p));
     let used = 0;
     const needs = [];
@@ -201,6 +209,7 @@
       '',
       'PROGRES SAAT INI:',
       progress,
+      ins.length ? '\nFILE LAMPIRAN PROYEK (dari pemilik proyek):\n' + ins.join('\n\n') : '',
       needs.length ? '\nFILE HASIL LANGKAH SEBELUMNYA YANG KAMU BUTUHKAN:\n' + needs.join('\n\n') : '',
       skipped.length ? `\n(File ini terlalu besar untuk disertakan dan tidak perlu dibaca ulang: ${skipped.join(', ')})` : '',
       '',
