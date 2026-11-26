@@ -85,8 +85,18 @@
   }
 
   // ---------- Prompt ----------
+  // File lampiran proyek (In/, selain brief.md). Dibaca tiap kali prompt dibuat, jadi file yang ditambah belakangan ikut.
+  async function readInFiles(name) {
+    const out = [];
+    for (const f of await fs.list(jp(name, 'In'))) {
+      if (f.path === 'brief.md') continue;
+      const c = await fs.read(jp(name, 'In/' + f.path));
+      if (c != null) out.push({ path: f.path, content: c });
+    }
+    return out;
+  }
   async function promptFor(job, cur) {
-    if (cur.kind === 'plan') return RC.buildPlanPrompt(await fs.read(jp(job.name, 'In/brief.md')) || '', []);
+    if (cur.kind === 'plan') return RC.buildPlanPrompt(await fs.read(jp(job.name, 'In/brief.md')) || '', await readInFiles(job.name));
     const st = job.steps[cur.step.id] || {};
     const needFiles = [];
     for (const p of cur.step.needs) {
@@ -94,7 +104,7 @@
       if (c != null) needFiles.push({ path: p, content: c });
     }
     return RC.buildStepPrompt({
-      plan: job.plan, step: cur.step, index: cur.index, got: st.got || [], needFiles,
+      plan: job.plan, step: cur.step, index: cur.index, got: st.got || [], needFiles, inFiles: await readInFiles(job.name),
       progress: RC.buildProgress(job.name, job.plan, job.steps), brief: await fs.read(jp(job.name, 'In/brief.md')) || '',
     });
   }
@@ -400,6 +410,7 @@
   }
 
   function renderList() {
+    try { window.dispatchEvent(new Event('relaychange')); } catch (_) {}
     if (!listEl) return;
     if (!ready()) {
       listEl.replaceChildren(el('p', { class: 'hint2 rempty', text: 'Fitur ini hanya jalan di APK terbaru. Pasang APK hasil build terbaru dulu.' }));
@@ -472,10 +483,11 @@
     );
   }
 
-  function newProjectForm() {
+  function newProjectForm(prefill) {
     if (!accounts.length) { toast('Tambahkan akun dulu.'); return; }
     const nameIn = el('input', { placeholder: 'Nama proyek (huruf, angka, - atau _)', autocomplete: 'off', maxlength: '40' });
     const briefIn = el('textarea', { rows: '7', placeholder: 'Brief proyek: apa yang mau dibuat, teknologi, aturan penting. Semakin jelas semakin baik.' });
+    if (prefill) { briefIn.value = prefill; nameIn.value = RC.safeName(prefill.split(/\s+/).slice(0, 3).join('-')) || ''; }
     const order = accounts.map((a) => ({ a, on: a.status !== 'working' }));
     const poolEl = el('div', { class: 'rpool' });
     const paint = () => {
@@ -553,8 +565,8 @@
       anchor.after(el('button', { id: 'relayBtn', type: 'button', class: 'tbtn relaybtn', text: '📁 Proyek estafet', onclick: openDrawer }));
       return true;
     };
-    let tries = 0;
-    const t = setInterval(() => { if (mount() || ++tries > 40) clearInterval(t); }, 250);
+    // Tombol "Proyek estafet" di halaman utama tidak dipasang lagi: estafet dibuka dengan geser ke kiri (lihat chat.js). Slide ini tetap ada di kode.
+    void mount;
     renderList();
   }
 
@@ -578,6 +590,13 @@
     await refreshJobs();
   }
 
-  window.Relay = { runJob, createProject, refreshJobs, dumpChat, markLimit };
+  window.Relay = {
+    runJob, createProject, refreshJobs, dumpChat, markLimit,
+    // dipakai halaman estafet (chat.js)
+    ready, fs, loadJob, saveJob, modal, newProjectForm, dumpForm, showLog, exportProject, deleteProject, cancelRun, armWake,
+    isRunning: (n) => !!(running && (!n || running.name === n)),
+    getJobs: () => jobs,
+    statusText,
+  };
   if (window.Auth && Auth.ready) Auth.ready.then(() => setTimeout(init, 300)); else setTimeout(init, 1500);
 })();
