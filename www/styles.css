@@ -621,3 +621,15 @@ body > header > h1 { font-size: 16px; }
 @keyframes fg-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
 @media (prefers-reduced-motion: reduce) { .firstguide .fg-arrow { animation: none; } }
 .tools .tbtn.running { opacity: .85; }
+
+/* Geser banner akun ke kiri: lapisan merah + tong sampah (app.js: attachSwipeDelete) */
+.acc > :not(.swdel) { transform: translateX(calc(var(--sw, 0px) * -1)); }
+.acc.swsnap > :not(.swdel) { transition: transform .25s var(--ease); }
+.swdel {
+  position: absolute; top: 0; right: 0; bottom: 0; width: var(--sw, 0px); padding: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; border-radius: 0;
+  background: #dc2626; color: #fff; border: 0;
+}
+.acc.swsnap > .swdel { transition: width .25s var(--ease); }
+.swdel svg { flex: none; width: 28px; height: 28px; }
+.swdel:active { background: #b91c1c; }
