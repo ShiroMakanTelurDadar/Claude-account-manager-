@@ -540,7 +540,7 @@
     const shown = await waitFor(() => (document.body.innerText || '').toLowerCase().includes(key), 30000, 300);
     if (!shown) return 'upload-not-shown';
     await waitFor(() => !document.querySelector('[role="progressbar"], [data-testid*="upload" i][data-state="loading"]'), 60000, 500);
-    await sleep(2500);
+    await sleep(1200);
     return '';
   }
 
@@ -672,10 +672,12 @@
     let lastSent = '';
     let lastSentAt = 0;
     let idleSince = 0;
+    let lastChange = Date.now();   // terakhir ada perubahan di halaman (teks mengalir, status alat berubah)
     const push = (md) => { lastSent = md; lastSentAt = Date.now(); return send({ type: 'workPartial', text: md }); };
     try {
       for (;;) {
-        await sleep(1000);
+        await sleep(600);
+        if (dirty) lastChange = Date.now();
         const lt = limitText();
         const busy = !!stopBtn() || hasBusyText();
         if (lt) {
@@ -691,7 +693,7 @@
         dirty = false;
         if (!busy && md) {
           if (!idleSince) idleSince = Date.now();
-          if (Date.now() - idleSince > 4000) {
+          if (Date.now() - idleSince > 2500) {
             const fin = replyMarkdown(false);
             await push(fin);
             if (limitText()) return { outcome: 'limit', text: limitText() };
@@ -699,6 +701,8 @@
           }
         } else idleSince = 0;
         if (!busy && !md && Date.now() - started > 90000) return { outcome: 'fail', text: 'why:no-response ' + where() };
+        // Macet: tombol stop menyala tapi halaman tidak berubah sama sekali 8 menit. Menyerah lebih awal daripada menunggu batas waktu tahap.
+        if (busy && Date.now() - lastChange > 8 * 60 * 1000) return { outcome: 'fail', text: 'why:stuck ' + where() };
       }
     } finally { mo.disconnect(); }
   }
@@ -710,6 +714,11 @@
     let data = '';
     let sent = false;
     let cards = '';
+    // Lama tiap fase (detik) supaya ketahuan waktu terbuang di mana: siap, unggah, kirim, kerja (Claude menjawab), unduh, data
+    const T0 = Date.now();
+    let tPrev = T0;
+    const phases = [];
+    const lap = (k) => { const n = Date.now(); phases.push(k + ' ' + Math.round((n - tPrev) / 1000) + 'd'); tPrev = n; };
     try {
       if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 120000))) {
         res = { outcome: 'fail', text: 'why:no-composer ' + where() };
@@ -735,19 +744,27 @@
           res = c.got ? { outcome: 'collected', text: '' } : { outcome: 'fail', text: `why:no-zip ${where()}` };
         }
       } else if (mode === 'work') {
+        lap('siap');
         let upErr = '';
-        if (Array.isArray(help.uploads) && help.uploads.length) upErr = await attachUploads(help.uploads);
+        if (Array.isArray(help.uploads) && help.uploads.length) { upErr = await attachUploads(help.uploads); lap('unggah'); }
         const err = upErr ? 'attach-' + upErr : await typeAndSend(help.baitCmd || '');
+        if (!upErr) lap('kirim');
+        let gotZip = false;
         if (err) res = limitText() ? { outcome: 'limit', text: limitText() } : { outcome: 'fail', text: `why:${err} ${where()}` };
         else {
           sent = true;
           res = await watchWork();
+          lap('kerja');
           if ((res.outcome === 'done' || res.outcome === 'paused') && help.expect) {
             const c = await collectZip(help.expect);
             cards = c.cards;
+            gotZip = c.got > 0;
+            lap('unduh');
           }
         }
-        if (res.outcome !== 'loggedout') data = await buildData();   // juga saat limit: percakapan di server tetap bisa dibaca
+        // Data percakapan hanya untuk diagnosa: lewati kalau tahap sukses (hemat satu unduhan JSON besar). Tetap diambil saat limit/gagal.
+        const needData = !(res.outcome === 'done' && (gotZip || !help.expect));
+        if (res.outcome !== 'loggedout' && needData) { data = await buildData(); lap('data'); }
       } else if (mode === 'send' || mode === 'continue') {
         const cmd = mode === 'send' ? 'Hi' : (help.baitCmd || 'Continue');
         const err = await typeAndSend(cmd);
@@ -780,6 +797,7 @@
     } catch (e) {
       res = { outcome: 'fail', text: `why:error ${(e && e.message) || e}` };
     }
+    if (phases.length) cards = 'fase: ' + phases.join(', ') + (cards ? ' | ' + cards : '');
     await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted, data, sent, cards });
   }
 
