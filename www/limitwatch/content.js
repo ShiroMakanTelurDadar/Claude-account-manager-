@@ -697,11 +697,13 @@
     let lastSent = '';
     let lastSentAt = 0;
     let idleSince = 0;
+    let lastPing = 0;
     let lastChange = Date.now();   // terakhir ada perubahan di halaman (teks mengalir, status alat berubah)
     const push = (md) => { lastSent = md; lastSentAt = Date.now(); return send({ type: 'workPartial', text: md }); };
     try {
       for (;;) {
         await sleep(600);
+        if (Date.now() - lastPing > 15000) { lastPing = Date.now(); send({ type: 'ping' }); }   // jantung: aplikasi tahu halaman masih hidup
         if (dirty) lastChange = Date.now();
         const lt = limitText();
         const busy = !!stopBtn() || hasBusyText();
@@ -905,6 +907,7 @@
       if (!help && i >= 20) break;
       await sleep(500);
     }
+    if (!help || help.wait) send({ type: 'hello', url: location.href, title: 'loginHelp-gagal: ' + (helpErr || (help && help.wait ? 'masih wait' : 'kosong')), challenge: false });
     help = help || {};
     if (help.bait) { await runBait(help); return; }
     if (help.email) fillEmail(help.email);
