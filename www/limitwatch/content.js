@@ -528,16 +528,41 @@
       }
       files.push(new File(chunks, list[i].name || ('file' + i + '.zip'), { type: 'application/zip' }));
     }
-    const input = await waitFor(() => document.querySelector('input[type="file"]'), 20000);
-    if (!input) return 'no-file-input';
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
-    input.files = dt.files;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+    let input = document.querySelector('input[type="file"]');
+    if (!input) {
+      // Input file sering baru dibuat setelah tombol lampiran ditekan
+      const ab = [...document.querySelectorAll('button')].find((b) => vis(b) && /attach|add files|upload|lampir|unggah|tambah/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-testid') || '')));
+      if (ab) { try { ab.click(); } catch (_) {} await sleep(600); }
+      input = await waitFor(() => document.querySelector('input[type="file"]'), 8000);
+    }
+    let placed = false;
+    if (input) {
+      try {
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        placed = true;
+      } catch (_) { placed = false; }
+    }
+    // Cadangan: jatuhkan file ke kolom chat seperti drag and drop
+    const dropOnto = () => {
+      const t = composer() || document.body;
+      for (const n of ['dragenter', 'dragover', 'drop']) {
+        let ev;
+        try { ev = new DragEvent(n, { bubbles: true, cancelable: true, dataTransfer: dt }); } catch (_) { ev = new Event(n, { bubbles: true, cancelable: true }); try { ev.dataTransfer = dt; } catch (_2) {} }
+        t.dispatchEvent(ev);
+      }
+    };
+    // Semua file harus tampil sebagai kartu lampiran (awalan nama, karena nama panjang bisa dipotong di tampilan)
+    const keys = files.map((f) => f.name.replace(/\.[^.]+$/, '').toLowerCase().slice(0, 12));
+    const seen = () => { const t = (document.body.innerText || '').toLowerCase(); return keys.every((k) => t.includes(k)); };
+    if (!placed) { dropOnto(); }
+    else if (!(await waitFor(seen, 8000, 300))) { dropOnto(); }
+    if (!input && !placed && !(await waitFor(seen, 8000, 300))) return 'no-file-input';
     // Tunggu nama file muncul di halaman (kartu lampiran), lalu beri waktu selesai mengunggah
-    const key = String(list[0].name || '').replace(/\.zip$/i, '').toLowerCase();
-    const shown = await waitFor(() => (document.body.innerText || '').toLowerCase().includes(key), 30000, 300);
+    const shown = await waitFor(seen, 30000, 300);
     if (!shown) return 'upload-not-shown';
     await waitFor(() => !document.querySelector('[role="progressbar"], [data-testid*="upload" i][data-state="loading"]'), 60000, 500);
     await sleep(1200);
@@ -743,6 +768,10 @@
           cards = c.cards;
           res = c.got ? { outcome: 'collected', text: '' } : { outcome: 'fail', text: `why:no-zip ${where()}` };
         }
+      } else if (mode === 'uploadtest') {
+        // Hanya lampirkan file uji ke chat baru, tanpa mengirim apa pun
+        const e = await attachUploads(help.uploads || []);
+        res = e ? { outcome: 'fail', text: 'why:attach-' + e + ' ' + where() } : { outcome: 'uploaded', text: '' };
       } else if (mode === 'work') {
         lap('siap');
         let upErr = '';
