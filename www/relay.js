@@ -441,6 +441,15 @@
     const st = job.steps[cur.step.id] = job.steps[cur.step.id] || { status: 'pending', got: [] };
     let got = false;
     try { got = await takeZip(job, cur.step, res); } catch (e) { await logEv(name, 'zip-err', { msg: String((e && e.message) || e) }); }
+    // Balasan selesai tapi zip belum terunduh: coba ambil lagi dari chat yang sama (tanpa kirim ulang prompt, jatah akun tidak terbuang)
+    if (!got && (state === 'done' || state === 'paused') && CHAT_RE.test(res.url || '')) {
+      try {
+        const r2 = await g().bait({ accountId: a.id, url: res.url, mode: 'collect', expect: cur.step.zip, timeoutMs: 120000 });
+        await logEv(name, 'collect', { tag, state: r2.state, dl: (r2.downloads || []).length, cards: String(r2.cards || '').slice(0, 400) });
+        got = await takeZip(job, cur.step, r2);
+        if (!got && r2.cards) res.cards = r2.cards;
+      } catch (e) { await logEv(name, 'zip-err', { msg: String((e && e.message) || e) }); }
+    }
     if (got) {
       st.status = 'done'; st.doneAt = Date.now(); st.accountId = a.id;
       const note = RC.extractState(text);
