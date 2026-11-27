@@ -247,7 +247,17 @@ public class MainActivity extends BridgeActivity {
             final String url = call.getString("url", "https://claude.ai/new");
             final String rawMode = call.getString("mode", "send");
             final String mode = "verify".equals(rawMode) ? "verify" : "delete".equals(rawMode) ? "delete" : "continue".equals(rawMode) ? "continue"
-                    : "work".equals(rawMode) ? "work" : "dump".equals(rawMode) ? "dump" : "send";
+                    : "work".equals(rawMode) ? "work" : "dump".equals(rawMode) ? "dump" : "collect".equals(rawMode) ? "collect" : "send";
+            // Lampiran (path relatif terhadap Projects) dan nama zip hasil yang diharapkan (mode "work" / "collect")
+            final ArrayList<String> ups = new ArrayList<>();
+            try {
+                JSArray ja = call.getArray("uploads");
+                if (ja != null) for (int i = 0; i < ja.length(); i++) ups.add(ja.getString(i));
+            } catch (Exception ignored) {
+            }
+            GeckoActivity.sNextUploads = ups;
+            GeckoActivity.sNextExpect = call.getString("expect", "");
+            GeckoActivity.sProjRoot = projRoot();
             // mode "continue": kirim Continue / command ke chat akun di sesi tersembunyi (tanpa membuka browser)
             // mode "work"    : (estafet) chat baru, kirim prompt langkah, tunggu sampai selesai / limit. Hasil: teks akhir, salinan parsial, data percakapan
             // mode "dump"    : buka chat (url), ambil data percakapan lewat API internal claude.ai, tanpa mengirim apa pun
@@ -400,6 +410,35 @@ public class MainActivity extends BridgeActivity {
             } catch (Exception e) {
                 call.reject("projDelete gagal: " + e.getMessage());
             }
+        }
+
+        // Pindahkan / ganti nama satu file proyek (dipakai untuk zip hasil unduhan: _incoming/... -> <proyek>/Out/stage_NN.zip)
+        @PluginMethod
+        public void projMove(PluginCall call) {
+            try {
+                File from = projFile(call.getString("from", ""));
+                File to = projFile(call.getString("to", ""));
+                if (!from.isFile()) { call.reject("file asal tidak ada"); return; }
+                File dir = to.getParentFile();
+                if (dir != null && !dir.exists()) dir.mkdirs();
+                if (to.exists()) to.delete();
+                if (!from.renameTo(to)) {
+                    FileOutputStream os = new FileOutputStream(to);
+                    try { os.write(readAll(from)); } finally { os.close(); }
+                    from.delete();
+                }
+                JSObject r = new JSObject();
+                r.put("size", to.length());
+                call.resolve(r);
+            } catch (Exception e) {
+                call.reject("projMove gagal: " + e.getMessage());
+            }
+        }
+
+        // Jalur manual lama: tidak dipakai lagi oleh unggah otomatis, tapi dipanggil relay.js; cukup diterima.
+        @PluginMethod
+        public void setUploads(PluginCall call) {
+            call.resolve();
         }
 
         // Salin satu file proyek ke folder Download (Android 10+ tanpa izin tambahan) supaya bisa dibuka aplikasi lain
@@ -1032,6 +1071,21 @@ public class MainActivity extends BridgeActivity {
         // Salinan parsial tetap ada walau sesi berakhir karena limit, supaya file yang sudah utuh bisa diselamatkan.
         private static String sBaitData = "";
         private static volatile String sWorkPartial = "";
+        // Estafet: lampiran yang diunggah halaman, zip hasil yang diunduh halaman, catatan diagnosis
+        static volatile ArrayList<String> sNextUploads = new ArrayList<>();
+        static volatile String sNextExpect = "";
+        static volatile File sProjRoot = null;
+        private static volatile ArrayList<File> sUploadFiles = new ArrayList<>();
+        private static volatile String sBaitExpect = "";
+        private static boolean sBaitSent = false;
+        private static String sBaitCards = "";
+        private static final ArrayList<String[]> sDownloads = new ArrayList<>();   // {path relatif, nama, ukuran, "1" kalau zip}
+
+        private static String safeName(String n) {
+            String r = n == null ? "" : n.replaceAll("[^A-Za-z0-9._-]", "_");
+            if (r.isEmpty()) r = "file.bin";
+            return r.length() > 120 ? r.substring(r.length() - 120) : r;
+        }
 
         // Refresh halaman sebelum dibaca (sesi latar belakang).
         // Halaman dimuat, lalu di-refresh (lewati cache) seperti tombol refresh di browser. Laporan halaman
@@ -1249,9 +1303,14 @@ public class MainActivity extends BridgeActivity {
             sBaitDeleted = false;
             sBaitData = "";
             sWorkPartial = "";
+            sBaitSent = false;
+            sBaitCards = "";
+            sDownloads.clear();
         }
 
-        private static synchronized void recordBait(String outcome, String text, String url, boolean deleted, String data) {
+        private static synchronized void recordBait(String outcome, String text, String url, boolean deleted, String data, boolean sent, String cards) {
+            sBaitSent = sent;
+            sBaitCards = cards == null ? "" : cards;
             sBaitOutcome = outcome;
             sBaitText = text;
             sBaitUrl = url;
@@ -1299,6 +1358,17 @@ public class MainActivity extends BridgeActivity {
                                     // Halaman belum di-refresh: content script diminta menunggu dan bertanya lagi
                                     o.put("wait", sCheckAccountId != null && !sReady);
                                     o.put("baitCmd", sCheckAccountId != null && sReady ? sBaitCmd : "");
+                                    o.put("expect", sCheckAccountId != null && sReady ? sBaitExpect : "");
+                                    JSONArray upl = new JSONArray();
+                                    if (sCheckAccountId != null && sReady) {
+                                        for (File uf : sUploadFiles) {
+                                            JSONObject uo = new JSONObject();
+                                            uo.put("name", uf.getName());
+                                            uo.put("size", uf.length());
+                                            upl.put(uo);
+                                        }
+                                    }
+                                    o.put("uploads", upl);
                                     out = new GeckoResult<>();
                                     out.complete(o.toString());   // String: pasti bisa diserialisasi GeckoView; halaman mem-parse JSON-nya
                                 } else if ("pasteCheck".equals(type)) {
@@ -1326,8 +1396,64 @@ public class MainActivity extends BridgeActivity {
                                                 msg.optString("text", ""),
                                                 msg.optString("url", ""),
                                                 msg.optBoolean("deleted", false),
-                                                msg.optString("data", ""));
+                                                msg.optString("data", ""),
+                                                msg.optBoolean("sent", false),
+                                                msg.optString("cards", ""));
                                     }
+                                } else if ("getUpload".equals(type)) {
+                                    // Halaman meminta sepotong file lampiran (base64) untuk diunggah ke chat
+                                    JSONObject o = new JSONObject();
+                                    int idx = msg.optInt("i", 0);
+                                    long off = (long) msg.optDouble("off", 0);
+                                    int len = Math.min(msg.optInt("len", 262144), 786432);
+                                    ArrayList<File> fl = sUploadFiles;
+                                    if (sCheckAccountId == null || idx < 0 || idx >= fl.size()) {
+                                        o.put("error", "tidak ada");
+                                    } else {
+                                        File f = fl.get(idx);
+                                        java.io.RandomAccessFile raf = new java.io.RandomAccessFile(f, "r");
+                                        try {
+                                            raf.seek(off);
+                                            byte[] buf = new byte[len];
+                                            int n = raf.read(buf);
+                                            if (n < 0) n = 0;
+                                            byte[] part = n == len ? buf : java.util.Arrays.copyOf(buf, n);
+                                            o.put("b64", android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP));
+                                            o.put("size", f.length());
+                                            o.put("eof", off + n >= f.length());
+                                        } finally {
+                                            raf.close();
+                                        }
+                                    }
+                                    out = new GeckoResult<>();
+                                    out.complete(o.toString());
+                                } else if ("dlChunk".equals(type)) {
+                                    // Halaman mengirim zip hasil (diunduh dengan fetch) sepotong demi sepotong
+                                    JSONObject o = new JSONObject();
+                                    File root = sProjRoot;
+                                    if (sCheckAccountId == null || root == null) {
+                                        o.put("error", "tidak aktif");
+                                    } else {
+                                        String nm = safeName(msg.optString("name", ""));
+                                        File dir = new File(root, "_incoming");
+                                        if (!dir.exists()) dir.mkdirs();
+                                        File f = new File(dir, nm);
+                                        boolean first = msg.optBoolean("first", false);
+                                        byte[] data = android.util.Base64.decode(msg.optString("b64", ""), android.util.Base64.DEFAULT);
+                                        FileOutputStream os = new FileOutputStream(f, !first);
+                                        try { os.write(data); } finally { os.close(); }
+                                        if (msg.optBoolean("last", false)) {
+                                            boolean zip = false;
+                                            java.io.FileInputStream in = new java.io.FileInputStream(f);
+                                            try { zip = in.read() == 'P' && in.read() == 'K'; } finally { in.close(); }
+                                            synchronized (GeckoActivity.class) {
+                                                sDownloads.add(new String[]{"_incoming/" + nm, nm, String.valueOf(f.length()), zip ? "1" : "0"});
+                                            }
+                                        }
+                                        o.put("ok", true);
+                                    }
+                                    out = new GeckoResult<>();
+                                    out.complete(o.toString());
                                 } else if ("workPartial".equals(type)) {
                                     // Salinan teks balasan yang sedang mengalir (mode "work"). Hanya yang terbaru disimpan.
                                     if (sCheckAccountId != null && sReady && "work".equals(sBaitMode)) {
@@ -1506,6 +1632,18 @@ public class MainActivity extends BridgeActivity {
                     sCheckAccountId = accountId;
                     sBaitMode = mode;
                     sBaitCmd = command == null ? "" : command;
+                    sBaitExpect = sNextExpect == null ? "" : sNextExpect;
+                    ArrayList<File> uf = new ArrayList<>();
+                    try {
+                        File root = sProjRoot;
+                        for (String rel : sNextUploads) {
+                            if (root == null || rel == null || rel.contains("..") || rel.startsWith("/")) continue;
+                            File f = new File(root, rel);
+                            if (f.isFile()) uf.add(f);
+                        }
+                    } catch (Exception ignored) {
+                    }
+                    sUploadFiles = uf;
                     if (sRuntime == null) sRuntime = GeckoRuntime.create(ctx);
 
                     GeckoSessionSettings settings = new GeckoSessionSettings.Builder()
@@ -1548,6 +1686,8 @@ public class MainActivity extends BridgeActivity {
                                 }
                                 sBaitMode = "";
                                 sBaitCmd = "";
+                                sBaitExpect = "";
+                                sUploadFiles = new ArrayList<>();
                                 sCheckAccountId = null;
                                 sCheckRunning = false;
                                 cb.done(r);
@@ -1563,6 +1703,18 @@ public class MainActivity extends BridgeActivity {
                                     r.put("data", sBaitData);
                                     r.put("partial", sWorkPartial);
                                     r.put("timedOut", !sBaitDone);
+                                    r.put("sent", sBaitSent);
+                                    r.put("cards", sBaitCards);
+                                    JSArray dls = new JSArray();
+                                    for (String[] d : sDownloads) {
+                                        JSObject dj = new JSObject();
+                                        dj.put("path", d[0]);
+                                        dj.put("name", d[1]);
+                                        dj.put("size", Long.parseLong(d[2]));
+                                        dj.put("zip", "1".equals(d[3]));
+                                        dls.put(dj);
+                                    }
+                                    r.put("downloads", dls);
                                 }
                                 r.put("diag", buildDiag());
                                 r.put("view", sViewKind);
@@ -1573,6 +1725,8 @@ public class MainActivity extends BridgeActivity {
                                 }
                                 sBaitMode = "";
                                 sBaitCmd = "";
+                                sBaitExpect = "";
+                                sUploadFiles = new ArrayList<>();
                                 sCheckAccountId = null;
                                 sCheckRunning = false;
                                 cb.done(r);
