@@ -1476,14 +1476,37 @@ public class MainActivity extends BridgeActivity {
                     }
                 };
 
-        // Pasang ekstensi sekali, lalu jalankan r (di thread utama)
+        // Pasang ekstensi sekali, lalu jalankan r (di thread utama).
+        // Ekstensi lama di profil dicopot dulu (sekali per proses) supaya kode content.js terbaru dari APK pasti yang berjalan,
+        // bukan salinan lama yang tertinggal di profil GeckoView.
+        private static boolean sExtFresh = false;
+
         private static void withExtension(final Runnable r) {
             if (sExtReady) {
                 r.run();
                 return;
             }
-            sRuntime.getWebExtensionController()
-                    .ensureBuiltIn(EXT_URI, EXT_ID)
+            final org.mozilla.geckoview.WebExtensionController c = sRuntime.getWebExtensionController();
+            if (sExtFresh) {
+                installExt(c, r);
+                return;
+            }
+            sExtFresh = true;
+            c.list().accept(
+                    list -> {
+                        WebExtension old = null;
+                        if (list != null) for (WebExtension e : list) if (EXT_ID.equals(e.id)) old = e;
+                        if (old == null) {
+                            installExt(c, r);
+                            return;
+                        }
+                        c.uninstall(old).accept(v -> installExt(c, r), err -> installExt(c, r));
+                    },
+                    err -> installExt(c, r));
+        }
+
+        private static void installExt(org.mozilla.geckoview.WebExtensionController c, final Runnable r) {
+            c.ensureBuiltIn(EXT_URI, EXT_ID)
                     .accept(
                             ext -> {
                                 if (ext != null) {
