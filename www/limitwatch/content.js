@@ -505,6 +505,119 @@
     return JSON.stringify({ at: Date.now(), url: location.href, size: c.text.length, tools: ex.tools, files: ex.files, parseErr: ex.err || '', raw: c.text.length <= 900000 ? c.text : '' });
   }
 
+
+  // ---------- Estafet: unggah lampiran dan ambil zip hasil ----------
+  const b64ToBytes = (b64) => { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+  const bytesToB64 = (u) => { let o = ''; for (let i = 0; i < u.length; i += 8192) o += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return btoa(o); };
+
+  // Ambil file lampiran dari aplikasi (potongan base64) lalu pasang ke input file chat. Hasil: '' = berhasil, selain itu kode kegagalan.
+  async function attachUploads(list) {
+    const files = [];
+    for (let i = 0; i < list.length; i++) {
+      const chunks = [];
+      let off = 0;
+      for (let guard = 0; guard < 400; guard++) {
+        const r = await send({ type: 'getUpload', i, off, len: 262144 });
+        if (!r || r.error || typeof r.b64 !== 'string') return 'upload-read';
+        const u = b64ToBytes(r.b64);
+        chunks.push(u);
+        off += u.length;
+        if (r.eof || u.length === 0) break;
+      }
+      files.push(new File(chunks, list[i].name || ('file' + i + '.zip'), { type: 'application/zip' }));
+    }
+    const input = await waitFor(() => document.querySelector('input[type="file"]'), 20000);
+    if (!input) return 'no-file-input';
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    input.files = dt.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    // Tunggu nama file muncul di halaman (kartu lampiran), lalu beri waktu selesai mengunggah
+    const key = String(list[0].name || '').replace(/\.zip$/i, '').toLowerCase();
+    const shown = await waitFor(() => (document.body.innerText || '').toLowerCase().includes(key), 30000, 300);
+    if (!shown) return 'upload-not-shown';
+    await waitFor(() => !document.querySelector('[role="progressbar"], [data-testid*="upload" i][data-state="loading"]'), 60000, 500);
+    await sleep(2500);
+    return '';
+  }
+
+  // Cari zip hasil di percakapan lalu unduh dengan fetch (cookie halaman ikut). Hasil dikirim ke aplikasi per potongan.
+  // Mengembalikan { got: jumlah file terkirim, cards: catatan diagnosis }.
+  async function collectZip(expect) {
+    const notes = [];
+    const note = (t) => { if (notes.join(' | ').length < 900) notes.push(t); };
+    const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
+    if (!m) return { got: 0, cards: 'bukan halaman chat' };
+    const conv = m[1];
+    const want = String(expect || '').toLowerCase();
+    let orgs = [];
+    try {
+      const r = await fetch('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
+      note('org=' + r.status);
+      if (r.ok) orgs = (await r.json()).map((o) => o && o.uuid).filter(Boolean);
+    } catch (e) { note('org-err'); }
+    // Kandidat dari JSON percakapan: jalur file sandbox dan rujukan file
+    const paths = [];
+    const uuids = [];
+    let raw = '';
+    for (const org of orgs) {
+      for (const q of ['?tree=True&rendering_mode=messages&render_all_tools=true', '']) {
+        try {
+          const c = await fetch(`/api/organizations/${org}/chat_conversations/${conv}${q}`, { credentials: 'include', headers: { accept: 'application/json' } });
+          if (c.ok) { raw = await c.text(); break; }
+        } catch (_) {}
+      }
+      if (raw) { orgs.splice(0, orgs.length, org); break; }
+    }
+    note('json=' + raw.length);
+    const addPath = (p) => { p = String(p).replace(/\\\//g, '/').replace(/[\\"'\s,;)]+$/, ''); if (/\.zip$/i.test(p) && !paths.includes(p)) paths.push(p); };
+    for (const mm of raw.matchAll(/\/mnt\/user-data\/outputs\/[^"\\\s,;)]+/g)) addPath(mm[0]);
+    if (want && !paths.some((p) => p.toLowerCase().endsWith(want))) paths.push('/mnt/user-data/outputs/' + expect);
+    try {
+      walkJson(JSON.parse(raw || 'null'), (o) => {
+        const nm = String(o.file_name || o.name || '');
+        if (o.file_uuid && /\.zip$/i.test(nm) && !uuids.includes(o.file_uuid)) uuids.push(o.file_uuid);
+        if (typeof o.path === 'string') addPath(o.path);
+      }, 0);
+    } catch (_) {}
+    for (const a of document.querySelectorAll('a[href]')) { const h = a.getAttribute('href') || ''; if (/\.zip(\?|$)/i.test(h)) note('a=' + h.slice(0, 80)); }
+    paths.sort((a, b) => (b.toLowerCase().includes(want) ? 1 : 0) - (a.toLowerCase().includes(want) ? 1 : 0) || a.localeCompare(b));
+    note('path=' + paths.length + ' uuid=' + uuids.length);
+
+    const urls = [];
+    for (const org of orgs) {
+      for (const p of paths) {
+        const e = encodeURIComponent(p);
+        urls.push({ n: p.split('/').pop(), u: `/api/organizations/${org}/conversations/${conv}/wiggle/download-file?path=${e}` });
+        urls.push({ n: p.split('/').pop(), u: `/api/organizations/${org}/chat_conversations/${conv}/wiggle/download-file?path=${e}` });
+      }
+      for (const id of uuids) {
+        urls.push({ n: 'file-' + id + '.zip', u: `/api/organizations/${org}/files/${id}/content` });
+        urls.push({ n: 'file-' + id + '.zip', u: `/api/${org}/files/${id}/document` });
+      }
+    }
+    let got = 0;
+    const doneNames = new Set();
+    for (const it of urls) {
+      if (doneNames.has(it.n)) continue;
+      try {
+        const r = await fetch(it.u, { credentials: 'include' });
+        if (!r.ok) { note(it.n + ':' + r.status); continue; }
+        const u8 = new Uint8Array(await r.arrayBuffer());
+        if (u8.length < 100 || u8[0] !== 0x50 || u8[1] !== 0x4b) { note(it.n + ':bukan-zip(' + u8.length + ')'); continue; }
+        const CH = 393216;
+        let ok = true;
+        for (let off = 0; off < u8.length; off += CH) {
+          const rr = await send({ type: 'dlChunk', name: it.n, b64: bytesToB64(u8.subarray(off, off + CH)), first: off === 0, last: off + CH >= u8.length });
+          if (!rr || !rr.ok) { ok = false; note(it.n + ':kirim-gagal'); break; }
+        }
+        if (ok) { got++; doneNames.add(it.n); note(it.n + ':ok ' + u8.length); }
+      } catch (e) { note(it.n + ':err ' + String((e && e.message) || e).slice(0, 40)); }
+    }
+    return { got, cards: notes.join(' | ') };
+  }
+
   // Tunggu Claude bekerja sampai selesai atau kena limit. Salinan balasan dikirim ke aplikasi tiap kali berubah (paling cepat tiap 2,5 detik),
   // sehingga kalau sesi terputus oleh limit, teks terakhir sudah ada di aplikasi. Perubahan halaman dipantau lewat MutationObserver.
   async function watchWork() {
@@ -551,6 +664,8 @@
     let res = { outcome: 'fail', text: 'why:no-response', deleted: false };
     let pre = '';
     let data = '';
+    let sent = false;
+    let cards = '';
     try {
       if (!(await waitFor(() => composer() || isLoggedOut() || isChallenge(), 120000))) {
         res = { outcome: 'fail', text: 'why:no-composer ' + where() };
@@ -566,10 +681,28 @@
         const r = await waitFor(() => hasMessages(), 60000, 300);
         if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
         else { data = await buildData(); res = { outcome: 'dumped', text: replyMarkdown(false) }; }
+      } else if (mode === 'collect') {
+        // Hanya ambil zip hasil dari chat yang sudah ada (tanpa mengirim apa pun)
+        const r = await waitFor(() => hasMessages(), 60000, 300);
+        if (!r) res = { outcome: 'fail', text: `why:no-response ${where()}` };
+        else {
+          const c = await collectZip(help.expect || '');
+          cards = c.cards;
+          res = c.got ? { outcome: 'collected', text: '' } : { outcome: 'fail', text: `why:no-zip ${where()}` };
+        }
       } else if (mode === 'work') {
-        const err = await typeAndSend(help.baitCmd || '');
+        let upErr = '';
+        if (Array.isArray(help.uploads) && help.uploads.length) upErr = await attachUploads(help.uploads);
+        const err = upErr ? 'attach-' + upErr : await typeAndSend(help.baitCmd || '');
         if (err) res = limitText() ? { outcome: 'limit', text: limitText() } : { outcome: 'fail', text: `why:${err} ${where()}` };
-        else res = await watchWork();
+        else {
+          sent = true;
+          res = await watchWork();
+          if ((res.outcome === 'done' || res.outcome === 'paused') && help.expect) {
+            const c = await collectZip(help.expect);
+            cards = c.cards;
+          }
+        }
         if (res.outcome !== 'loggedout') data = await buildData();   // juga saat limit: percakapan di server tetap bisa dibaca
       } else if (mode === 'send' || mode === 'continue') {
         const cmd = mode === 'send' ? 'Hi' : (help.baitCmd || 'Continue');
@@ -603,7 +736,7 @@
     } catch (e) {
       res = { outcome: 'fail', text: `why:error ${(e && e.message) || e}` };
     }
-    await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted, data });
+    await send({ type: 'baitResult', outcome: res.outcome, text: res.text || '', url: location.href, deleted: !!res.deleted, data, sent, cards });
   }
 
   // ---------- Isi email dan command ----------
