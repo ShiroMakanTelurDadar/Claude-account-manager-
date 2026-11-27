@@ -600,7 +600,14 @@
       }, 0);
     } catch (_) {}
     for (const a of document.querySelectorAll('a[href]')) { const h = a.getAttribute('href') || ''; if (/\.zip(\?|$)/i.test(h)) note('a=' + h.slice(0, 80)); }
-    paths.sort((a, b) => (b.toLowerCase().includes(want) ? 1 : 0) - (a.toLowerCase().includes(want) ? 1 : 0) || a.localeCompare(b));
+    // Urutan = yang PALING BARU dulu. Posisi kemunculan terakhir di JSON percakapan (yang dibuat/disebut belakangan ada di bagian akhir) jadi penentu.
+    // Nama yang diminta (expect) tetap didahulukan; kalau tidak ada, zip terbaru dipakai sebagai cadangan.
+    const lastPos = (x) => raw.lastIndexOf(x);
+    const wantBase = want.replace(/\.zip$/i, '');
+    const isWant = (x) => !!wantBase && x.toLowerCase().includes(wantBase);
+    paths.sort((a, b) => (isWant(b) ? 1 : 0) - (isWant(a) ? 1 : 0) || lastPos(b) - lastPos(a));
+    uuids.sort((a, b) => lastPos(b) - lastPos(a));
+    if (paths.length) note('terbaru=' + paths[0].split('/').pop());
     note('path=' + paths.length + ' uuid=' + uuids.length);
 
     const urls = [];
@@ -617,21 +624,40 @@
     }
     let got = 0;
     const doneNames = new Set();
+    let fallbackNoted = false;
+    // Baca isi unduhan sebagai base64 lewat FileReader: hasilnya teks biasa, jadi tidak kena galat lintas-compartment
+    // ('Permission denied to access property "constructor"') yang muncul bila array byte dari respons dipakai langsung.
+    const blobB64 = (blob) => new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result || '').split(',')[1] || '');
+      fr.onerror = () => rej(new Error('filereader'));
+      fr.readAsDataURL(blob);
+    });
+    const errMsg = (e) => String((e && ((e.name || '') + ' ' + (e.message || ''))) || e).trim().slice(0, 60);
     for (const it of urls) {
       if (doneNames.has(it.n)) continue;
+      if (wantBase && !isWant(it.n) && !fallbackNoted) { fallbackNoted = true; note('cadangan:zip-terbaru'); }
       try {
         const r = await apiGet(it.u, { credentials: 'include' });
         if (!r.ok) { note(it.n + ':' + r.status); continue; }
-        const u8 = new Uint8Array(await r.arrayBuffer());
-        if (u8.length < 100 || u8[0] !== 0x50 || u8[1] !== 0x4b) { note(it.n + ':bukan-zip(' + u8.length + ')'); continue; }
-        const CH = 393216;
+        let b64 = '';
+        let spare = null;
+        try { spare = r.clone(); } catch (_) { spare = null; }
+        try { b64 = await blobB64(await r.blob()); } catch (e1) {
+          note(it.n + ':blob ' + errMsg(e1));
+          try { b64 = bytesToB64(new Uint8Array(await (spare || r).arrayBuffer())); } catch (e2) { note(it.n + ':ab ' + errMsg(e2)); continue; }
+        }
+        let head = '';
+        try { head = atob(b64.slice(0, 8)); } catch (_) { head = ''; }
+        if (b64.length < 140 || head.charCodeAt(0) !== 0x50 || head.charCodeAt(1) !== 0x4b) { note(it.n + ':bukan-zip(' + Math.floor(b64.length * 3 / 4) + ')'); continue; }
+        const CHB = 524288;   // karakter base64 per potongan (kelipatan 4, jadi tiap potongan bisa didekode sendiri)
         let ok = true;
-        for (let off = 0; off < u8.length; off += CH) {
-          const rr = await send({ type: 'dlChunk', name: it.n, b64: bytesToB64(u8.subarray(off, off + CH)), first: off === 0, last: off + CH >= u8.length });
+        for (let off = 0; off < b64.length; off += CHB) {
+          const rr = await send({ type: 'dlChunk', name: it.n, b64: b64.slice(off, off + CHB), first: off === 0, last: off + CHB >= b64.length });
           if (!rr || !rr.ok) { ok = false; note(it.n + ':kirim-gagal'); break; }
         }
-        if (ok) { got++; doneNames.add(it.n); note(it.n + ':ok ' + u8.length); }
-      } catch (e) { note(it.n + ':err ' + String((e && e.message) || e).slice(0, 40)); }
+        if (ok) { got++; doneNames.add(it.n); note(it.n + ':ok ' + Math.floor(b64.length * 3 / 4)); break; }   // satu zip cukup
+      } catch (e) { note(it.n + ':err ' + errMsg(e)); }
     }
     return { got, cards: notes.join(' | ') };
   }
