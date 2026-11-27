@@ -197,7 +197,9 @@
     return sent ? '' : 'not-submitted';
   }
 
-  const where = () => `url=${location.pathname} judul=${(document.title || '').slice(0, 40)}`;
+  // Versi ekstensi yang benar-benar berjalan: ikut di setiap pesan galat, supaya terlihat kode lama atau baru yang dipakai
+  const EXT_VER = (() => { try { return (typeof browser !== 'undefined' && browser.runtime.getManifest().version) || '?'; } catch (_) { return '?'; } })();
+  const where = () => `url=${location.pathname} judul=${(document.title || '').slice(0, 40)} ext=v${EXT_VER}`;
 
   // ---------- Pancingan ----------
   async function stopResponse() {
@@ -542,10 +544,25 @@
     return '';
   }
 
+  // fetch untuk API claude.ai dari content script. Percobaan 1: fetch bawaan ekstensi. Percobaan 2: fetch milik halaman (asal-usul halaman,
+  // cookie sama persis dengan yang dipakai situs). Kalau keduanya gagal, pesan galat aslinya ikut dilaporkan (bukan hanya "org-err").
+  async function apiGet(url, init) {
+    const errs = [];
+    for (let i = 0; i < 2; i++) {
+      try { return await fetch(url, init); } catch (e) { errs.push('cs:' + String((e && ((e.name || '') + ' ' + (e.message || ''))) || e).trim().slice(0, 70)); }
+      try {
+        const w = window.wrappedJSObject;
+        if (w && typeof w.fetch === 'function') return await w.fetch(url, cloneInto(init || {}, window));
+      } catch (e) { errs.push('pg:' + String((e && ((e.name || '') + ' ' + (e.message || ''))) || e).trim().slice(0, 70)); }
+      await sleep(1500);
+    }
+    throw new Error(errs.join(' / '));
+  }
+
   // Cari zip hasil di percakapan lalu unduh dengan fetch (cookie halaman ikut). Hasil dikirim ke aplikasi per potongan.
   // Mengembalikan { got: jumlah file terkirim, cards: catatan diagnosis }.
   async function collectZip(expect) {
-    const notes = [];
+    const notes = ['v' + EXT_VER];
     const note = (t) => { if (notes.join(' | ').length < 900) notes.push(t); };
     const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
     if (!m) return { got: 0, cards: 'bukan halaman chat' };
@@ -553,10 +570,10 @@
     const want = String(expect || '').toLowerCase();
     let orgs = [];
     try {
-      const r = await fetch('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
+      const r = await apiGet('/api/organizations', { credentials: 'include', headers: { accept: 'application/json' } });
       note('org=' + r.status);
-      if (r.ok) orgs = (await r.json()).map((o) => o && o.uuid).filter(Boolean);
-    } catch (e) { note('org-err'); }
+      if (r.ok) orgs = JSON.parse(await r.text()).map((o) => o && o.uuid).filter(Boolean);
+    } catch (e) { note('org-err ' + String((e && e.message) || e).slice(0, 160)); }
     // Kandidat dari JSON percakapan: jalur file sandbox dan rujukan file
     const paths = [];
     const uuids = [];
@@ -564,9 +581,10 @@
     for (const org of orgs) {
       for (const q of ['?tree=True&rendering_mode=messages&render_all_tools=true', '']) {
         try {
-          const c = await fetch(`/api/organizations/${org}/chat_conversations/${conv}${q}`, { credentials: 'include', headers: { accept: 'application/json' } });
+          const c = await apiGet(`/api/organizations/${org}/chat_conversations/${conv}${q}`, { credentials: 'include', headers: { accept: 'application/json' } });
+          note('conv' + (q ? '+' : '') + '=' + c.status);
           if (c.ok) { raw = await c.text(); break; }
-        } catch (_) {}
+        } catch (e) { note('conv-err ' + String((e && e.message) || e).slice(0, 100)); }
       }
       if (raw) { orgs.splice(0, orgs.length, org); break; }
     }
@@ -602,7 +620,7 @@
     for (const it of urls) {
       if (doneNames.has(it.n)) continue;
       try {
-        const r = await fetch(it.u, { credentials: 'include' });
+        const r = await apiGet(it.u, { credentials: 'include' });
         if (!r.ok) { note(it.n + ':' + r.status); continue; }
         const u8 = new Uint8Array(await r.arrayBuffer());
         if (u8.length < 100 || u8[0] !== 0x50 || u8[1] !== 0x4b) { note(it.n + ':bukan-zip(' + u8.length + ')'); continue; }
