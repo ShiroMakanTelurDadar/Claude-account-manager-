@@ -177,7 +177,8 @@
   function stageRules(zip, prevZip) {
     return [
       'ATURAN TAHAP (wajib):',
-      '- Kamu BOLEH memakai sandbox / menjalankan perintah (kode, tsc, tes).',
+      '- Kamu BOLEH memakai sandbox, tapi KERJA CEPAT: tulis file langsung, jangan `npm install`, jangan merender atau menjalankan proyek, jangan mengulang pengecekan. Cukup periksa sintaks ringan (misalnya `node --check` / `python -m py_compile`) bila perlu.',
+      '- Jangan menulis penjelasan panjang. Tulis kode, buat zip, tampilkan zip, dan akhiri dengan blok `state`.',
       prevZip
         ? `- Lampiran chat ini: \`${prevZip}\` = isi proyek sampai tahap sebelumnya. Ekstrak dulu ke folder kerja, lanjutkan dari situ, jangan menulis ulang dari nol.`
         : '- Ini tahap pertama: mulai dari kosong (kecuali ada lampiran dari pemilik proyek).',
