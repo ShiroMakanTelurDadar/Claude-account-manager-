@@ -247,7 +247,7 @@ public class MainActivity extends BridgeActivity {
             final String url = call.getString("url", "https://claude.ai/new");
             final String rawMode = call.getString("mode", "send");
             final String mode = "verify".equals(rawMode) ? "verify" : "delete".equals(rawMode) ? "delete" : "continue".equals(rawMode) ? "continue"
-                    : "work".equals(rawMode) ? "work" : "dump".equals(rawMode) ? "dump" : "collect".equals(rawMode) ? "collect" : "send";
+                    : "work".equals(rawMode) ? "work" : "dump".equals(rawMode) ? "dump" : "collect".equals(rawMode) ? "collect" : "uploadtest".equals(rawMode) ? "uploadtest" : "send";
             // Lampiran (path relatif terhadap Projects) dan nama zip hasil yang diharapkan (mode "work" / "collect")
             final ArrayList<String> ups = new ArrayList<>();
             try {
@@ -1675,7 +1675,7 @@ public class MainActivity extends BridgeActivity {
                     final GeckoSession s = new GeckoSession(settings);
                     // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
                     // work: chat baru, tidak perlu refresh (seperti send). dump: chat lama, di-refresh dulu.
-                    setupSession(s, h, !"send".equals(mode) && !"work".equals(mode));
+                    setupSession(s, h, !"send".equals(mode) && !"work".equals(mode) && !"uploadtest".equals(mode));
                     s.open(sRuntime);
                     attachHidden(s, ctx);
                     s.setActive(true);
