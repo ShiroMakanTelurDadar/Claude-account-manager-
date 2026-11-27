@@ -13,7 +13,7 @@
   const g = () => (typeof P !== 'undefined' && P.GeckoBrowser) || null;
   const ready = () => { const G = g(); return !!(typeof native !== 'undefined' && native && G && G.bait && G.projWrite); };
 
-  const STEP_TIMEOUT = 15 * 60 * 1000;   // ms: batas satu langkah (sejak halaman siap)
+  const STEP_TIMEOUT = 40 * 60 * 1000;   // ms: batas MUTLAK satu tahap (sejak halaman siap). Tahap yang masih jalan tidak boleh dipotong lalu diulang dari awal; macet dideteksi terpisah (why:stuck)
   const PLAN_TIMEOUT = 6 * 60 * 1000;
   const DUMP_TIMEOUT = 120000;
   const MAX_TRIES = 3;                   // langkah yang selesai dijawab tapi file hasilnya tetap tidak lengkap: menyerah setelah ini
