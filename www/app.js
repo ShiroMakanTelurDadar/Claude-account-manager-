@@ -1595,6 +1595,7 @@ const BAIT_WHY = {
   'not-submitted': 'pesan tidak terkirim',
   'no-response': 'pesan terkirim tapi Claude tidak membalas dan tidak ada popup limit',
   timeout: 'halaman tidak melapor (timeout)',
+  silent: 'halaman diam 4 menit (tidak ada laporan sama sekali)',
 };
 function baitWhy(text) {
   const m = /^why:(\S+)(.*)$/.exec(text || '');
