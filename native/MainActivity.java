@@ -1208,6 +1208,7 @@ public class MainActivity extends BridgeActivity {
                     + "; url=" + sLastUrl;
         }
         private static volatile long sReadyAt = 0;
+        private static volatile long sLastMsgAt = 0;   // pesan terakhir dari halaman (jantung): tahap yang sunyi terlalu lama dianggap macet
         private static int sSessionSeq = 0;   // pewaktu lama dari sesi sebelumnya tidak boleh mengubah sesi yang sekarang
 
         private static void markReady() {
@@ -1346,6 +1347,7 @@ public class MainActivity extends BridgeActivity {
                             if (message instanceof JSONObject) {
                                 JSONObject msg = (JSONObject) message;
                                 String type = msg.optString("type", "pageState");
+                                sLastMsgAt = SystemClock.uptimeMillis();
                                 if ("loginHelp".equals(type)) {
                                     // Email akun untuk isi otomatis di halaman login. Kosong saat pengecekan latar belakang,
                                     // supaya pengecekan tidak memicu email login.
@@ -1654,6 +1656,7 @@ public class MainActivity extends BridgeActivity {
                     resetDiag();
                     sCheckAccountId = accountId;
                     sBaitMode = mode;
+                    sLastMsgAt = SystemClock.uptimeMillis();
                     sBaitCmd = command == null ? "" : command;
                     sBaitExpect = sNextExpect == null ? "" : sNextExpect;
                     ArrayList<File> uf = new ArrayList<>();
@@ -1692,7 +1695,8 @@ public class MainActivity extends BridgeActivity {
                         public void run() {
                             long now = SystemClock.uptimeMillis();
                             long base = sReadyAt > 0 ? sReadyAt : start;
-                            boolean expired = now - base > timeoutMs || now - start > timeoutMs + 25000L;
+                            boolean silent = sBaitMode != null && !sBaitMode.isEmpty() && now - Math.max(base, sLastMsgAt) > 240000L;
+                            boolean expired = silent || now - base > timeoutMs || now - start > timeoutMs + 25000L;
                             boolean done;
                             synchronized (GeckoActivity.class) {
                                 done = sBaitDone;
@@ -1720,7 +1724,7 @@ public class MainActivity extends BridgeActivity {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sBaitDone ? sBaitOutcome : "fail");
-                                    r.put("text", sBaitDone ? sBaitText : "why:timeout");
+                                    r.put("text", sBaitDone ? sBaitText : (silent ? "why:silent" : "why:timeout"));
                                     r.put("url", sBaitUrl);
                                     r.put("deleted", sBaitDeleted);
                                     r.put("data", sBaitData);
