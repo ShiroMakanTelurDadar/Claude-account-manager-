@@ -9,6 +9,14 @@
 }
 .chatpage.show { transform: none; visibility: visible; transition: transform .3s var(--ease), visibility 0s; }
 .chatpage.drag { visibility: visible; transition: none; }
+/* Lapisan GPU hanya selama animasi geser (hemat memori); isi halaman tidak memengaruhi tata letak di luarnya */
+.chatpage { contain: layout paint style; }
+.chatpage.anim { will-change: transform; }
+/* Chat terbuka dan animasi selesai: halaman utama di bawahnya tidak perlu digambar */
+body.chat-settled > .bg, body.chat-settled > header, body.chat-settled > #summary, body.chat-settled > #addForm,
+body.chat-settled > #list, body.chat-settled > #empty { visibility: hidden; }
+.cpmsgs, .cside { overscroll-behavior: contain; }
+.cmcode { contain: paint; }
 body.chat-open { overflow: hidden; }
 
 /* Kolom chat */
