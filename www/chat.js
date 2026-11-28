@@ -23,6 +23,7 @@
   let curName = '';          // nama proyek yang dipilih
   let job = null;            // job.json proyek itu (salinan terbaru)
   let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
+  let pendingMark = '';       // penanda yang sedang digambar; jadi timeline setelah berhasil
   let timer = null;
   let titleEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
   let msgsEl = null, inputEl = null, sendBtn = null;
@@ -91,9 +92,9 @@
     const evs = [];
     for (const l of String(logTxt || '').split('\n')) { if (!l) continue; try { evs.push(JSON.parse(l)); } catch (_) {} }
     // Penanda perubahan: panjang log + status + jumlah balasan
-    const mark = `${curName}|${evs.length}|${job && job.status}|${job && job.seq}|${running() ? 1 : 0}`;
+    const mark = `${curName}|${evs.length}|${job && job.status}|${job && job.seq}|${job && job.lastAccount}|${job && job.current}|${running() ? 1 : 0}`;
     if (mark === timeline) return null;
-    timeline = mark;
+    pendingMark = mark;   // baru dianggap tampil setelah berhasil digambar (kalau galat, dicoba lagi di detik berikutnya)
 
     const kids = [];
     if (brief) kids.push(bubble('user', brief));
@@ -117,7 +118,8 @@
         seq++;
         const raw = rawBySeq.get(seq);
         if (raw && o.state !== 'limit') {
-          const t = await fs.read(raw);
+          let t = '';
+          try { t = await fs.read(raw); } catch (_) { t = ''; }
           if (t) kids.push(bubble('ai', t.length > 6000 ? t.slice(0, 6000) + '\n\n… (dipotong di tampilan, utuh ada di State/raw)' : t));
         }
       }
@@ -137,6 +139,7 @@
     if (!kids) return;
     const stick = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 120;
     msgsEl.replaceChildren(...kids);
+    timeline = pendingMark;
     if (stick) msgsEl.scrollTop = msgsEl.scrollHeight;
   }
 
