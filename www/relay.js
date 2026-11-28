@@ -276,6 +276,7 @@
       }
       const a = pick.account;
       const tag = cur.kind === 'step' ? cur.step.id : cur.kind;
+      await logEv(name, 'pick', { tag, account: a.name, skip: [...skip].length });
       const prompt = await promptFor(job, cur);
       let uploads = [];
       try { uploads = await attachmentsFor(job, cur); } catch (_) { uploads = []; }
@@ -308,7 +309,7 @@
       }
       const verdict = await handleResult(job, cur, tag, a, res, skip, fails);
       await saveJob(job);
-      if (res.state !== 'loggedout') { try { await trimChats(run, a, res.url, name); } catch (_) {} }
+      if (res.state !== 'loggedout') { const tt = Date.now(); try { await trimChats(run, a, res.url, name); } catch (e) { await logEv(name, 'trim-err', { msg: String((e && e.message) || e).slice(0, 120) }); } await logEv(name, 'trim', { account: a.name, ms: Date.now() - tt }); }
       if (verdict === 'stop') { renderList(); return; }
     }
     if (run.cancel) {
