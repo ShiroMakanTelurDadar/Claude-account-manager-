@@ -1224,11 +1224,45 @@ public class MainActivity extends BridgeActivity {
             sLastUrl = "";
             sHello = false;
             sHelloInfo = "";
+            synchronized (sTrail) { sTrail.setLength(0); sCounts.clear(); }
+            sPhase = "";
+            sPhaseAt = 0;
+            sHb = "";
+            sHbAt = 0;
+            sHbN = 0;
             sDiagWall = System.currentTimeMillis();
             sDiagUp = SystemClock.uptimeMillis();
         }
+        // Jejak pesan dari halaman untuk diagnosa: fase terakhir, daftar kejadian berikut waktunya, hitungan tiap jenis pesan, dan detak jantung terakhir
+        private static final StringBuilder sTrail = new StringBuilder();
+        private static final java.util.LinkedHashMap<String, Integer> sCounts = new java.util.LinkedHashMap<>();
+        private static volatile String sPhase = "";
+        private static volatile long sPhaseAt = 0;
+        private static volatile String sHb = "";
+        private static volatile long sHbAt = 0;
+        private static volatile int sHbN = 0;
+
+        private static void trail(String ev) {
+            synchronized (sTrail) {
+                sTrail.append((SystemClock.uptimeMillis() - sDiagUp) / 1000).append("d:").append(ev).append(' ');
+                if (sTrail.length() > 900) sTrail.delete(0, sTrail.length() - 900);
+            }
+        }
+        private static void count(String type) {
+            synchronized (sTrail) {
+                Integer n = sCounts.get(type);
+                sCounts.put(type, n == null ? 1 : n + 1);
+            }
+        }
         private static volatile long sDiagWall = 0;
         private static volatile long sDiagUp = 0;
+
+        private static String sCountsText() {
+            synchronized (sTrail) { return sCounts.toString(); }
+        }
+        private static String sTrailText() {
+            synchronized (sTrail) { return sTrail.toString(); }
+        }
 
         private static String buildDiag() {
             String load = sPageStarts == 0 ? "tidak mulai" : sPageStops == 0 ? "belum selesai" : sPageOk ? "selesai" : "gagal";
@@ -1240,7 +1274,11 @@ public class MainActivity extends BridgeActivity {
                     + "; wall=" + ((System.currentTimeMillis() - sDiagWall) / 1000) + "d"
                     + "; up=" + ((SystemClock.uptimeMillis() - sDiagUp) / 1000) + "d"
                     + "; senyap=" + ((SystemClock.uptimeMillis() - sLastMsgAt) / 1000) + "d"
-                    + "; lihat=" + sViewKind;
+                    + "; lihat=" + sViewKind
+                    + "; fase=" + sPhase + (sPhaseAt > 0 ? "(" + ((SystemClock.uptimeMillis() - sPhaseAt) / 1000) + "d lalu)" : "")
+                    + "; hb=" + sHbN + "x" + (sHbAt > 0 ? " terakhir " + ((SystemClock.uptimeMillis() - sHbAt) / 1000) + "d lalu: " + sHb : "")
+                    + "; n=" + sCountsText()
+                    + "; jejak=" + sTrailText();
         }
         private static volatile long sReadyAt = 0;
         private static volatile long sLastMsgAt = 0;   // pesan terakhir dari halaman (jantung): tahap yang sunyi terlalu lama dianggap macet
@@ -1382,8 +1420,23 @@ public class MainActivity extends BridgeActivity {
                             if (message instanceof JSONObject) {
                                 JSONObject msg = (JSONObject) message;
                                 String type = msg.optString("type", "pageState");
-                                sLastMsgAt = SystemClock.uptimeMillis();
-                                if ("loginHelp".equals(type)) {
+                                if (!"hb".equals(type)) sLastMsgAt = SystemClock.uptimeMillis();   // detak jantung bukan kemajuan
+                                count(type);
+                                if ("phase".equals(type)) {
+                                    sPhase = msg.optString("p", "");
+                                    sPhaseAt = SystemClock.uptimeMillis();
+                                    trail("f:" + sPhase);
+                                } else if ("hb".equals(type)) {
+                                    sHb = msg.optString("s", "");
+                                    if (sHb.length() > 200) sHb = sHb.substring(0, 200);
+                                    sHbAt = SystemClock.uptimeMillis();
+                                    sHbN++;
+                                } else if (!"loginHelp".equals(type) && !"getUpload".equals(type) && !"workPartial".equals(type) && !"pageState".equals(type)) {
+                                    trail(type);
+                                }
+                                if ("phase".equals(type) || "hb".equals(type)) {
+                                    // hanya dicatat
+                                } else if ("loginHelp".equals(type)) {
                                     // Email akun untuk isi otomatis di halaman login. Kosong saat pengecekan latar belakang,
                                     // supaya pengecekan tidak memicu email login.
                                     JSONObject o = new JSONObject();
@@ -1507,7 +1560,8 @@ public class MainActivity extends BridgeActivity {
                                     }
                                 }
                             }
-                        } catch (Exception ignored) {
+                        } catch (Exception ex) {
+                            trail("GALAT:" + ex);
                         }
                         return out;
                     }
@@ -1771,7 +1825,7 @@ public class MainActivity extends BridgeActivity {
                                 JSObject r = new JSObject();
                                 synchronized (GeckoActivity.class) {
                                     r.put("state", sBaitDone ? sBaitOutcome : "fail");
-                                    r.put("text", sBaitDone ? sBaitText : (silent ? "why:silent" : "why:timeout"));
+                                    r.put("text", sBaitDone ? sBaitText : (silent ? "why:silent fase=" + sPhase : "why:timeout fase=" + sPhase));
                                     r.put("url", sBaitUrl);
                                     r.put("deleted", sBaitDeleted);
                                     r.put("data", sBaitData);
