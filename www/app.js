@@ -1600,7 +1600,7 @@ const BAIT_WHY = {
 function baitWhy(text) {
   const m = /^why:(\S+)(.*)$/.exec(text || '');
   if (!m) return '';
-  return BAIT_WHY[m[1]] || (m[1] === 'error' ? `error skrip${m[2]}` : m[1]);
+  return (BAIT_WHY[m[1]] ? BAIT_WHY[m[1]] + ((m[1] === 'silent' || m[1] === 'timeout') ? m[2] : '') : '') || (m[1] === 'error' ? `error skrip${m[2]}` : m[1]);
 }
 
 // Pasang hasil pancingan ke akun: limit -> status Limit (+ jam reset dari teks), free -> limit dianggap selesai
