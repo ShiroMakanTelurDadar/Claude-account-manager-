@@ -1053,6 +1053,32 @@ public class MainActivity extends BridgeActivity {
         // Pengecekan latar belakang: selama sCheckAccountId tidak null, laporan halaman dicatat di sini
         private static volatile String sCheckAccountId = null;
         private static boolean sCheckRunning = false;
+        private static volatile long sRunDeadline = 0;   // jam dinding: kunci sesi yang lebih tua dari ini dianggap bocor (sesi sebelumnya mati diam-diam)
+        private static volatile GeckoSession sCurSession = null;
+
+        // Sesi tersembunyi gagal karena galat di kode native: lepas kunci dan kembalikan hasil gagal, jangan menggantung selamanya
+        private static void failRun(CheckCallback cb, Throwable ex, String state) {
+            try { detachHidden(); } catch (Throwable ignored) { }
+            try { if (sCurSession != null) sCurSession.close(); } catch (Throwable ignored) { }
+            sCurSession = null;
+            sBaitMode = "";
+            sBaitCmd = "";
+            sBaitExpect = "";
+            sUploadFiles = new ArrayList<>();
+            sCheckAccountId = null;
+            sCheckRunning = false;
+            JSObject r = new JSObject();
+            r.put("state", state);
+            r.put("text", "why:error native " + String.valueOf(ex));
+            try { cb.done(r); } catch (Throwable ignored) { }
+        }
+
+        // Kunci bocor (sesi lama tidak pernah selesai): bersihkan sisa sesi lama sebelum memulai yang baru
+        private static void killStale() {
+            try { detachHidden(); } catch (Throwable ignored) { }
+            try { if (sCurSession != null) sCurSession.close(); } catch (Throwable ignored) { }
+            sCurSession = null;
+        }
         static volatile boolean sCancel = false;   // diset tombol tahan-batal di aplikasi; dibaca loop pengecekan
         private static String sCheckState = "";
         private static String sCheckText = "";
@@ -1198,14 +1224,23 @@ public class MainActivity extends BridgeActivity {
             sLastUrl = "";
             sHello = false;
             sHelloInfo = "";
+            sDiagWall = System.currentTimeMillis();
+            sDiagUp = SystemClock.uptimeMillis();
         }
+        private static volatile long sDiagWall = 0;
+        private static volatile long sDiagUp = 0;
 
         private static String buildDiag() {
             String load = sPageStarts == 0 ? "tidak mulai" : sPageStops == 0 ? "belum selesai" : sPageOk ? "selesai" : "gagal";
             return "ext=" + (sExtInfo.isEmpty() ? "?" : sExtInfo)
                     + "; muat=" + load
                     + "; hello=" + (sHello ? sHelloInfo : "tidak")
-                    + "; url=" + sLastUrl;
+                    + "; url=" + sLastUrl
+                    // wall jauh lebih besar dari up = HP / aplikasi dibekukan (tidur) selama sesi. senyap = detik sejak pesan terakhir dari halaman.
+                    + "; wall=" + ((System.currentTimeMillis() - sDiagWall) / 1000) + "d"
+                    + "; up=" + ((SystemClock.uptimeMillis() - sDiagUp) / 1000) + "d"
+                    + "; senyap=" + ((SystemClock.uptimeMillis() - sLastMsgAt) / 1000) + "d"
+                    + "; lihat=" + sViewKind;
         }
         private static volatile long sReadyAt = 0;
         private static volatile long sLastMsgAt = 0;   // pesan terakhir dari halaman (jantung): tahap yang sunyi terlalu lama dianggap macet
@@ -1533,7 +1568,8 @@ public class MainActivity extends BridgeActivity {
             h.post(new Runnable() {
                 @Override
                 public void run() {
-                    if (sCheckRunning) {
+                    try {
+                    if (sCheckRunning && System.currentTimeMillis() < sRunDeadline) {
                         JSObject busy = new JSObject();
                         busy.put("state", "unknown");
                         busy.put("error", "busy");
@@ -1541,6 +1577,8 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     sCheckRunning = true;
+                    sRunDeadline = System.currentTimeMillis() + timeoutMs + 120000L;
+                    killStale();
                     sCancel = false;
                     resetCheck();
                     resetDiag();
@@ -1552,6 +1590,7 @@ public class MainActivity extends BridgeActivity {
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
+                    sCurSession = s;
                     // Tanpa refresh paksa di awal: halaman dibaca apa adanya. Kalau 25 detik belum ada hasil, halaman di-refresh sekali (lihat di bawah).
                     setupSession(s, h, false);
                     final boolean[] reloaded = {false};
@@ -1569,6 +1608,7 @@ public class MainActivity extends BridgeActivity {
                     h.postDelayed(new Runnable() {
                         @Override
                         public void run() {
+                            try {
                             long now = SystemClock.uptimeMillis();
                             // Batas waktu dihitung sejak halaman di-refresh; batas total mencegah menggantung
                             long base = sReadyAt > 0 ? sReadyAt : start;
@@ -1628,8 +1668,10 @@ public class MainActivity extends BridgeActivity {
                             } else {
                                 h.postDelayed(this, 500);
                             }
+                            } catch (Throwable ex) { failRun(cb, ex, "unknown"); }
                         }
                     }, 2000);
+                    } catch (Throwable ex) { failRun(cb, ex, "unknown"); }
                 }
             });
         }
@@ -1642,7 +1684,8 @@ public class MainActivity extends BridgeActivity {
             h.post(new Runnable() {
                 @Override
                 public void run() {
-                    if (sCheckRunning) {
+                    try {
+                    if (sCheckRunning && System.currentTimeMillis() < sRunDeadline) {
                         JSObject busy = new JSObject();
                         busy.put("state", "fail");
                         busy.put("error", "busy");
@@ -1650,6 +1693,8 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     sCheckRunning = true;
+                    sRunDeadline = System.currentTimeMillis() + timeoutMs + 120000L;
+                    killStale();
                     sCancel = false;
                     resetCheck();
                     resetBait();
@@ -1676,6 +1721,7 @@ public class MainActivity extends BridgeActivity {
                             .contextId(accountId)
                             .build();
                     final GeckoSession s = new GeckoSession(settings);
+                    sCurSession = s;
                     // verify / continue: halaman di-refresh dulu sebelum dibaca atau dikirimi pesan. send: chat baru, tidak perlu.
                     // work: chat baru, tidak perlu refresh (seperti send). dump: chat lama, di-refresh dulu.
                     setupSession(s, h, !"send".equals(mode) && !"work".equals(mode) && !"uploadtest".equals(mode));
@@ -1693,6 +1739,7 @@ public class MainActivity extends BridgeActivity {
                     h.postDelayed(new Runnable() {
                         @Override
                         public void run() {
+                            try {
                             long now = SystemClock.uptimeMillis();
                             long base = sReadyAt > 0 ? sReadyAt : start;
                             boolean silent = sBaitMode != null && !sBaitMode.isEmpty() && now - Math.max(base, sLastMsgAt) > 240000L;
@@ -1760,8 +1807,10 @@ public class MainActivity extends BridgeActivity {
                             } else {
                                 h.postDelayed(this, 100);
                             }
+                            } catch (Throwable ex) { failRun(cb, ex, "fail"); }
                         }
                     }, 1000);
+                    } catch (Throwable ex) { failRun(cb, ex, "fail"); }
                 }
             });
         }
