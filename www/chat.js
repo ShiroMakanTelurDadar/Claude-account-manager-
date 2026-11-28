@@ -24,6 +24,8 @@
   let job = null;            // job.json proyek itu (salinan terbaru)
   let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
   let stagesOpen = false;    // panel Output: kelompok "Zip per tahap" terbuka atau tertutup
+  let accSig = '';            // tanda isi panel akun terakhir (supaya tidak digambar ulang kalau tidak berubah)
+  let settleT = null;         // pewaktu: halaman geser selesai -> halaman di bawahnya disembunyikan (hemat gambar ulang)
   let pendingMark = '';       // penanda yang sedang digambar; jadi timeline setelah berhasil
   let timer = null;
   let titleEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
@@ -151,14 +153,17 @@
     return jobs;
   }
 
+  // Tulis teks hanya kalau berubah: menulis teks yang sama tetap memaksa hitung ulang tata letak
+  const setText = (e, t) => { if (e.textContent !== t) e.textContent = t; };
+
   function renderHead() {
     if (!titleEl) return;
     syncJob();
-    titleEl.textContent = curName || '';
+    setText(titleEl, curName || '');
     const run = running();
     const has = !!job;
     actBtn.disabled = !has || (!run && job.status === 'done');
-    actBtn.textContent = run ? '■' : '▶';
+    setText(actBtn, run ? '■' : '▶');
     actBtn.setAttribute('aria-label', run ? 'Batalkan proyek' : 'Mulai / lanjutkan proyek');
     actBtn.classList.toggle('stop', run);
     moreBtn.disabled = !has;
@@ -168,9 +173,9 @@
     sendBtn.disabled = locked;
     const total = job && job.plan ? job.plan.steps.length : 0;
     const done = job && job.plan ? job.plan.steps.filter((s) => (job.steps[s.id] || {}).status === 'done').length : 0;
-    barEl.firstChild.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+    { const w = `${total ? Math.round((done / total) * 100) : 0}%`; if (barEl.firstChild.style.width !== w) barEl.firstChild.style.width = w; }
     const tv = job ? RC.timerView(job, Date.now()) : null;
-    stEl.textContent = job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}${tv ? ` · ⏱ ${RC.fmtDur(tv.total)}` : ''}` : (rready() ? '' : 'Butuh APK terbaru');
+    setText(stEl, job ? `${R().statusText(job)}${total ? ` · langkah ${done}/${total}` : ''}${tv ? ` · ⏱ ${RC.fmtDur(tv.total)}` : ''}` : (rready() ? '' : 'Butuh APK terbaru'));
   }
 
   function onAct() {
@@ -312,6 +317,9 @@
     if (!list.length) { accEl.replaceChildren(el('div', { class: 'cfnone', text: 'Belum ada akun' })); return; }
     const pool = (job && job.pool) || [];
     const run = running();
+    const sig = list.map((a) => `${a.id}|${a.status}|${a.resetAt || ''}|${pool.indexOf(a.id)}|${run && job && job.lastAccount === a.name ? 1 : 0}`).join(';') + `#${job ? 1 : 0}`;
+    if (sig === accSig) return;
+    accSig = sig;
     accEl.replaceChildren(...list.map((a) => {
       const lim = a.status === 'working';
       const idx = pool.indexOf(a.id);
@@ -423,20 +431,31 @@
   const topPage = () => (shown(page) ? page : shown(listPage) ? listPage : null);
   function push(cam) { if (!(history.state && history.state.cam === cam)) { try { history.pushState({ cam }, ''); } catch (_) {} } }
   function back(cam) { try { if (history.state && history.state.cam === cam) history.back(); } catch (_) {} }
+  // Setelah animasi geser selesai (±300 ms): halaman utama di bawah (wallpaper, kartu akun) disembunyikan supaya tidak ikut digambar ulang.
+  // Dilepas lagi begitu halaman mulai ditutup atau ditarik (geser), karena halaman bawah harus kelihatan.
+  function settle(p) {
+    clearTimeout(settleT);
+    settleT = setTimeout(() => { p.classList.remove('anim'); if (topPage()) document.body.classList.add('chat-settled'); }, 360);
+  }
   function showPage(p) {
     p.style.transform = '';
     p.classList.remove('drag');
-    p.classList.add('show');
+    p.classList.add('show', 'anim');
     document.body.classList.add('chat-open');
+    settle(p);
     clearInterval(timer);
     timer = setInterval(tick, 2000);
   }
   function hidePage(p) {
+    document.body.classList.remove('chat-settled');
     p.style.transform = '';
+    p.classList.add('anim');
     p.classList.remove('drag', 'show');
+    settle(p);
     if (!topPage()) { document.body.classList.remove('chat-open'); clearInterval(timer); }
   }
   function tick() {
+    if (document.hidden) return;   // aplikasi di latar belakang: tidak perlu menggambar apa pun
     if (shown(page)) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) refreshFiles(); }
     if (shown(listPage)) renderProjects();
   }
@@ -456,12 +475,16 @@
 
   function openChat(n) {
     if (!page) build();
-    curName = n; job = null; timeline = ''; logMark = '';
-    const r = R();
-    if (r && r.refreshJobs) r.refreshJobs().then(() => { renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true); }).catch(() => {});
-    renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true);
+    curName = n; job = null; timeline = ''; logMark = ''; accSig = '';
+    renderHead();      // ringan: judul dan status saja, supaya animasi geser langsung mulai
     showPage(page);
     push('chat');
+    // Isi berat (pesan, akun, file, log) menunggu animasi geser selesai, lalu digambar sekali (bukan dua kali seperti sebelumnya)
+    const fill = () => { if (curName !== n || !shown(page)) return; renderHead(); renderAccounts(); renderMsgs(true); refreshFiles(); refreshLog(true); };
+    setTimeout(() => {
+      const r = R();
+      if (r && r.refreshJobs) r.refreshJobs().then(fill).catch(fill); else fill();
+    }, 340);
   }
   function closeChat(fromPop) {
     if (!shown(page)) return;
@@ -514,6 +537,7 @@
       if ((sw.mode === 'open' && dx > 0) || (sw.mode === 'close' && dx < 0)) { sw = null; return; }
       sw.locked = true;
       if (sw.mode === 'open') { prepareList(); sw.p = listPage; }
+      document.body.classList.remove('chat-settled');
       sw.p.classList.add('drag');
     }
     const w = sw.w;
@@ -531,7 +555,7 @@
     s.p.style.transform = '';
     if (s.mode === 'open') { if (far) openList(); }
     else if (far) { if (s.p === page) closeChat(false); else closeList(false); }
-    else s.p.classList.add('show');
+    else { s.p.classList.add('show'); settle(s.p); }
   }
   document.addEventListener('touchend', endSwipe, { passive: true });
   document.addEventListener('touchcancel', endSwipe, { passive: true });
