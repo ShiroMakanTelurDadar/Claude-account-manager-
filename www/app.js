@@ -1097,6 +1097,22 @@ function tokenCell(a) {
   };
 }
 
+// Limit yang belum reset (jam reset masih di depan). Akun seperti ini dilewati pengecekan dan pancingan.
+function limitActive(a) {
+  return a.status === 'working' && !!a.resetAt && Date.parse(a.resetAt) > Date.now();
+}
+// Buang akun yang masih limit dari daftar cek / pancing. Akun yang limitnya sudah lewat jam reset tetap ikut.
+function dropLimited(list, opts) {
+  const keep = list.filter((a) => !limitActive(a));
+  const n = list.length - keep.length;
+  if (n && !opts.auto) {
+    toast(keep.length
+      ? `${n} akun masih limit, dilewati (tidak dicek / dipancing).`
+      : (n === 1 ? `Akun "${shortName(list[0].name)}" masih limit sampai ${atShort(list[0].resetAt)}. Tidak dicek.` : `${n} akun masih limit. Tidak ada yang dicek.`), 5000);
+  }
+  return keep;
+}
+
 // ---------- Status turunan satu akun ----------
 function view(a) {
   const working = a.status === 'working';
@@ -1109,8 +1125,9 @@ function view(a) {
   const c = a.check;
   const checkBusy = !!c && c.state === 'busy' && now - c.at < CHECK_BUSY_TTL;
   const loggedOut = !!c && c.state === 'loggedout';
-  // Chat menampilkan Continue / Try again (atau limit sudah selesai) dan Claude tidak sedang bekerja
-  const resumable = !!c && (c.state === 'resume' || c.state === 'reset') && now - c.at < RESUME_TTL && !live;
+  // Chat menampilkan Continue / Try again (atau limit sudah selesai) dan Claude tidak sedang bekerja.
+  // Limit aktif (belum reset) selalu menang: laporan halaman "Continue / Try again" tidak boleh menyalakan tombol Continue.
+  const resumable = !waiting && !!c && (c.state === 'resume' || c.state === 'reset') && now - c.at < RESUME_TTL && !live;
   const resetDone = resumable && c.state === 'reset';
   return {
     working, list, ms, waiting, over, loggedOut, resumable, resetDone,
@@ -1250,6 +1267,8 @@ async function runChecks(list, opts = {}) {
   if (!native || !G || !G.check) { if (!opts.auto) toast('Cek akun hanya jalan di aplikasi Android.'); return false; }
   if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
   if (!list.length) { if (!opts.auto) toast('Belum ada akun.'); return false; }
+  list = dropLimited(list, opts);
+  if (!list.length) return true;   // semua akun masih limit: tidak ada yang dicek
   checking = true;
   cancelReq = false;
   updateAutoHint();
@@ -1632,6 +1651,8 @@ async function runBaitCycle(list, opts = {}) {
   if (!native || !G || !G.bait || !G.check) return runChecks(list, opts);   // APK lama tanpa pancingan: cek biasa
   if (checking) { if (!opts.auto) toast('Pengecekan lain masih berjalan.'); return false; }
   if (!list.length) return false;
+  list = dropLimited(list, opts);
+  if (!list.length) return true;   // semua akun masih limit: tidak ada yang dipancing
   checking = true;
   cancelReq = false;
   updateAutoHint();
