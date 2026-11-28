@@ -366,7 +366,7 @@
     if (text) { await fs.write(jp(name, `State/raw/${tag}-${job.seq}.md`), text); job.raw.push(`State/raw/${tag}-${job.seq}.md`); }
     if (res.data) { await fs.write(jp(name, `State/raw/${tag}-${job.seq}.json`), res.data); job.raw.push(`State/raw/${tag}-${job.seq}.json`); }
     while (job.raw.length > RAW_KEEP * 2) await fs.del(jp(name, job.raw.shift())).catch(() => {});
-    await logEv(name, 'result', { tag, account: a.name, ms: res.ms || 0, state, sent: !!res.sent, chars: text.length, dl: (res.downloads || []).length, timedOut: !!res.timedOut, why, cards: String(res.cards || '').slice(0, 300), diag: String(res.diag || '').slice(0, 300) });
+    await logEv(name, 'result', { tag, account: a.name, ms: res.ms || 0, state, sent: !!res.sent, chars: text.length, dl: (res.downloads || []).length, timedOut: !!res.timedOut, why, cards: String(res.cards || '').slice(0, 300), diag: String(res.diag || '').slice(0, 1400) });
 
     if (state === 'loggedout') {
       skip.add(a.id);
