@@ -522,6 +522,18 @@ public class MainActivity extends BridgeActivity {
             call.resolve(r);
         }
 
+        // Kondisi hidup sesi tersembunyi yang sedang bekerja: salinan balasan Claude yang sedang mengalir, fase, dan lama sesi.
+        // Dipakai halaman chat proyek untuk menampilkan kemajuan tanpa menunggu tahap selesai.
+        @PluginMethod
+        public void workLive(PluginCall call) {
+            JSObject r = new JSObject();
+            r.put("active", GeckoActivity.sCheckRunning);
+            r.put("partial", GeckoActivity.sWorkPartial);
+            r.put("fase", GeckoActivity.sPhase);
+            r.put("detik", (SystemClock.uptimeMillis() - GeckoActivity.sDiagUp) / 1000);
+            call.resolve(r);
+        }
+
         // Status izin yang dibutuhkan cek saat aplikasi tertutup
         @PluginMethod
         public void bgStatus(PluginCall call) {
