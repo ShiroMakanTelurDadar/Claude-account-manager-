@@ -23,6 +23,7 @@
   let curName = '';          // nama proyek yang dipilih
   let job = null;            // job.json proyek itu (salinan terbaru)
   let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
+  let stagesOpen = false;    // panel Output: kelompok "Zip per tahap" terbuka atau tertutup
   let pendingMark = '';       // penanda yang sedang digambar; jadi timeline setelah berhasil
   let timer = null;
   let titleEl = null, actBtn = null, moreBtn = null, barEl = null, stEl = null;
@@ -248,7 +249,25 @@
   function renderFiles() {
     const none = (t) => [el('div', { class: 'cfnone', text: t })];
     if (inEl) inEl.replaceChildren(...(inFiles.length ? inFiles.map((f) => fileRow(f, 'in')) : none('Kosong')));
-    if (outEl) outEl.replaceChildren(...(outFiles.length ? outFiles.map((f) => fileRow(f, 'out')) : none('Kosong')));
+    if (outEl) {
+      if (!outFiles.length) { outEl.replaceChildren(...none('Kosong')); }
+      else {
+        // Proyek selesai: zip tahap terakhir = hasil akhir, ditampilkan sendiri di atas. Zip tahap lain dikelompokkan di bawahnya.
+        const lastZip = job && job.status === 'done' && job.plan && job.plan.steps.length ? job.plan.steps[job.plan.steps.length - 1].zip : '';
+        const fin = lastZip ? outFiles.find((f) => f.path === lastZip) : null;
+        const rest = outFiles.filter((f) => f !== fin);
+        const kids = [];
+        if (fin) { kids.push(el('div', { class: 'cfnone', text: '★ Hasil akhir' }), fileRow(fin, 'out')); }
+        if (rest.length) {
+          if (fin) {
+            // Zip per tahap bisa dibuka/ditutup (awalnya tertutup); daftar baris hanya digambar saat terbuka
+            kids.push(el('button', { type: 'button', class: 'cfbtn', style: 'width:100%;text-align:left;padding:6px 8px', text: (stagesOpen ? '▾ ' : '▸ ') + `Zip per tahap (${rest.length})`, onclick: () => { stagesOpen = !stagesOpen; renderFiles(); } }));
+            if (stagesOpen) kids.push(...rest.map((f) => fileRow(f, 'out')));
+          } else kids.push(...rest.map((f) => fileRow(f, 'out')));
+        }
+        outEl.replaceChildren(...kids);
+      }
+    }
   }
 
   async function addInput(files) {
