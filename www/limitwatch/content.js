@@ -22,9 +22,17 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let lastSendErr = '';
+  // Fase kerja sekarang: dilaporkan ke aplikasi tiap berganti, dan ikut di detak jantung (hb) supaya terlihat macet di mana
+  let PHASE = 'mulai';
+  const phase = (p) => { PHASE = p; try { browser.runtime.sendMessage({ type: 'phase', p }).catch(() => {}); } catch (_) {} };
   const send = async (m) => {
     try {
-      let r = await browser.runtime.sendMessage(m);
+      // Jawaban aplikasi yang tidak pernah datang tidak boleh menggantung selamanya: 60 detik lalu dianggap gagal (dan tercatat)
+      let r = await Promise.race([
+        browser.runtime.sendMessage(m),
+        new Promise((res) => setTimeout(() => res({ __timeout: true }), 60000)),
+      ]);
+      if (r && r.__timeout) { lastSendErr = 'timeout-' + (m && m.type); return null; }
       if (typeof r === 'string') { try { r = JSON.parse(r); } catch (_) {} }   // aplikasi menjawab berupa teks JSON
       return r;
     } catch (e) { lastSendErr = String((e && e.message) || e); return null; }
@@ -169,8 +177,10 @@
 
   // Isi kolom chat lalu kirim. Hasil: kode kegagalan ('' = terkirim).
   async function typeAndSend(text) {
+    phase('kirim:tunggu-composer');
     const c = await waitFor(composer, 25000);
     if (!c) return 'no-composer';
+    phase('kirim:ketik');
     c.focus();
     setValue(c, text);
     await sleep(400);
@@ -186,8 +196,10 @@
       }
     };
     const submitted = () => !!stopBtn() || (composer() ? !composerText(composer()) : hasMessages());   // kolom chat hilang sesaat tanpa pesan = belum terkirim
+    phase('kirim:klik');
     const b = await waitFor(sendBtn, 3000, 150);
     if (b) click(b); else pressEnter();
+    phase('kirim:tunggu-terkirim');
     const sent1 = await waitFor(submitted, 3500, 150);
     if (sent1) return '';
     // Belum terkirim: coba cara satunya (tombol kirim <-> Enter), sekali
@@ -199,7 +211,7 @@
 
   // Versi ekstensi yang benar-benar berjalan: ikut di setiap pesan galat, supaya terlihat kode lama atau baru yang dipakai
   const EXT_VER = (() => { try { return (typeof browser !== 'undefined' && browser.runtime.getManifest().version) || '?'; } catch (_) { return '?'; } })();
-  const where = () => `url=${location.pathname} judul=${(document.title || '').slice(0, 40)} ext=v${EXT_VER}`;
+  const where = () => `url=${location.pathname} judul=${(document.title || '').slice(0, 40)} ext=v${EXT_VER} fase=${PHASE}${lastSendErr ? ' sendErr=' + lastSendErr : ''}`;
 
   // ---------- Pancingan ----------
   async function stopResponse() {
@@ -501,6 +513,7 @@
     return out;
   }
   async function buildData() {
+    phase('data');
     const c = await fetchConvo();
     if (!c.text) return JSON.stringify({ at: Date.now(), url: location.href, err: c.err || 'kosong' });
     const ex = extractConvo(c.text);
@@ -514,6 +527,7 @@
 
   // Ambil file lampiran dari aplikasi (potongan base64) lalu pasang ke input file chat. Hasil: '' = berhasil, selain itu kode kegagalan.
   async function attachUploads(list) {
+    phase('unggah:baca');
     const files = [];
     for (let i = 0; i < list.length; i++) {
       const chunks = [];
@@ -528,6 +542,7 @@
       }
       files.push(new File(chunks, list[i].name || ('file' + i + '.zip'), { type: 'application/zip' }));
     }
+    phase('unggah:pasang');
     const dt = new DataTransfer();
     for (const f of files) dt.items.add(f);
     let input = document.querySelector('input[type="file"]');
@@ -562,6 +577,7 @@
     else if (!(await waitFor(seen, 8000, 300))) { dropOnto(); }
     if (!input && !placed && !(await waitFor(seen, 8000, 300))) return 'no-file-input';
     // Tunggu nama file muncul di halaman (kartu lampiran), lalu beri waktu selesai mengunggah
+    phase('unggah:tunggu-kartu');
     const shown = await waitFor(seen, 30000, 300);
     if (!shown) return 'upload-not-shown';
     await waitFor(() => !document.querySelector('[role="progressbar"], [data-testid*="upload" i][data-state="loading"]'), 60000, 500);
@@ -587,6 +603,7 @@
   // Cari zip hasil di percakapan lalu unduh dengan fetch (cookie halaman ikut). Hasil dikirim ke aplikasi per potongan.
   // Mengembalikan { got: jumlah file terkirim, cards: catatan diagnosis }.
   async function collectZip(expect) {
+    phase('unduh');
     const notes = ['v' + EXT_VER];
     const note = (t) => { if (notes.join(' | ').length < 900) notes.push(t); };
     const m = /^\/chat\/([0-9a-f-]{36})/i.exec(location.pathname);
@@ -690,6 +707,7 @@
   // Tunggu Claude bekerja sampai selesai atau kena limit. Salinan balasan dikirim ke aplikasi tiap kali berubah (paling cepat tiap 2,5 detik),
   // sehingga kalau sesi terputus oleh limit, teks terakhir sudah ada di aplikasi. Perubahan halaman dipantau lewat MutationObserver.
   async function watchWork() {
+    phase('kerja');
     let dirty = true;
     const mo = new MutationObserver(() => { dirty = true; });
     mo.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -736,6 +754,14 @@
 
   async function runBait(help) {
     const mode = help.bait;
+    phase('tunggu-composer');
+    // Detak jantung tiap 10 detik (tidak dihitung sebagai kemajuan oleh aplikasi): isinya potret halaman, untuk melihat kenapa diam
+    const snap = () => {
+      const n = (q) => document.querySelectorAll(q).length;
+      let t = 0; try { t = ((document.body && document.body.innerText) || '').length; } catch (_) {}
+      return [`vis=${document.visibilityState}`, `fase=${PHASE}`, `comp=${composer() ? 1 : 0}`, `file=${n('input[type="file"]')}`, `stop=${stopBtn() ? 1 : 0}`, `lim=${limitText() ? 1 : 0}`, `path=${location.pathname.slice(0, 22)}`, `len=${t}`, `err=${lastSendErr}`].join(' ');
+    };
+    setInterval(() => { try { send({ type: 'hb', s: snap() }); } catch (_) {} }, 10000);
     let res = { outcome: 'fail', text: 'why:no-response', deleted: false };
     let pre = '';
     let data = '';
@@ -775,6 +801,7 @@
         const e = await attachUploads(help.uploads || []);
         res = e ? { outcome: 'fail', text: 'why:attach-' + e + ' ' + where() } : { outcome: 'uploaded', text: '' };
       } else if (mode === 'work') {
+        phase('siap');
         lap('siap');
         let upErr = '';
         if (Array.isArray(help.uploads) && help.uploads.length) { upErr = await attachUploads(help.uploads); lap('unggah'); }
@@ -898,6 +925,7 @@
     // Tanda hidup: aplikasi tahu skrip ini benar-benar jalan di halaman (dipakai untuk penjelasan kalau gagal)
     send({ type: 'hello', url: location.href, title: document.title || '', challenge: isChallenge() });
 
+    phase('loginHelp');
     let help = null;
     let helpErr = '';
     for (let i = 0; i < 80; i++) {   // wait=true: halaman belum di-refresh. Jawaban kosong/error: coba lagi ~10 detik (jalur ke aplikasi kadang belum siap)
