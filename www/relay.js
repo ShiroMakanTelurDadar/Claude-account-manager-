@@ -565,6 +565,52 @@
     toast(`${n} file hasil disalin ke folder Download.`, 6000);
   }
 
+  // Saat proyek baru dibuat: tawarkan menghapus file hasil proyek lama (hanya proyek yang sudah selesai atau berhenti, tidak yang sedang jalan).
+  // Pilihan: hapus zip per tahap saja (hasil akhir disimpan), hapus semua file hasil, atau simpan semua. Resolve setelah pengguna memilih.
+  async function oldOutputs(exceptName) {
+    const out = [];
+    let dirs = [];
+    try { dirs = await fs.dirs(''); } catch (_) { return out; }
+    for (const d of dirs) {
+      if (d === exceptName || d.startsWith('_') || (running && running.name === d)) continue;
+      let files = [];
+      try { files = (await fs.list(jp(d, 'Out'))).filter((f) => /\.zip$/i.test(f.path)); } catch (_) { continue; }
+      if (!files.length) continue;
+      const j = await loadJob(d);
+      if (j && (j.status === 'running' || j.status === 'queued' || j.status === 'waiting_limit' || j.status === 'waiting_cond')) continue;   // masih akan dilanjutkan: jangan diusik
+      const last = j && j.plan && j.plan.steps.length ? j.plan.steps[j.plan.steps.length - 1].zip : '';
+      out.push({ name: d, files, final: files.find((f) => f.path === last) || null, size: files.reduce((a, f) => a + (f.size || 0), 0) });
+    }
+    return out;
+  }
+  const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+  function askCleanOld(list) {
+    return new Promise((resolve) => {
+      const nFiles = list.reduce((a, p) => a + p.files.length, 0);
+      const total = list.reduce((a, p) => a + p.size, 0);
+      const inter = list.reduce((a, p) => a + p.files.filter((f) => !p.final || f.path !== p.final.path).reduce((x, f) => x + (f.size || 0), 0), 0);
+      let m;
+      const done = (v) => { m.remove(); resolve(v); };
+      const doDel = async (keepFinal) => {
+        for (const p of list) for (const f of p.files) {
+          if (keepFinal && p.final && f.path === p.final.path) continue;
+          try { await fs.del(jp(p.name, 'Out/' + f.path)); } catch (_) {}
+        }
+        toast(keepFinal ? 'Zip per tahap proyek lama dihapus, hasil akhir disimpan.' : 'File hasil proyek lama dihapus.', 5000);
+        done(true);
+      };
+      m = modal(
+        el('b', { text: 'Hapus file hasil proyek lama?' }),
+        el('div', { class: 'hint2', text: `${list.length} proyek lama punya ${nFiles} file zip (${mb(total)}): ${list.map((p) => p.name).join(', ')}.` }),
+        el('div', { class: 'rbtns' },
+          el('button', { type: 'button', class: 'btn sm rb', text: `Hapus zip per tahap (${mb(inter)})`, onclick: () => doDel(true) }),
+          el('button', { type: 'button', class: 'btn-g rb', text: `Hapus semua (${mb(total)})`, onclick: () => doDel(false) }),
+          el('button', { type: 'button', class: 'btn-g rb', text: 'Simpan semua', onclick: () => done(false) }),
+        ),
+      );
+    });
+  }
+
   async function deleteProject(name) {
     if (running && running.name === name) { toast('Batalkan dulu proyek yang sedang berjalan.'); return; }
     if (!confirm(`Hapus proyek "${name}" beserta semua filenya (In, Out, State)?`)) return;
@@ -750,6 +796,7 @@
             const name = RC.safeName(nameIn.value);
             if (!name) { errEl.textContent = 'Judul proyek kosong atau tidak valid.'; return; }
             if (!pool.length) { errEl.textContent = 'Pilih minimal satu akun.'; return; }
+            try { const old = await oldOutputs(name); if (old.length) await askCleanOld(old); } catch (_) {}
             try { await createProject(name, '', pool); } catch (e) { errEl.textContent = String((e && e.message) || e); return; }
             m.remove();
             await refreshJobs();
