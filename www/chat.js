@@ -24,6 +24,8 @@
   let job = null;            // job.json proyek itu (salinan terbaru)
   let timeline = '';         // penanda isi kolom chat terakhir (supaya tidak digambar ulang tanpa perubahan)
   let stagesOpen = false;    // panel Output: kelompok "Zip per tahap" terbuka atau tertutup
+  let waitEl = null;          // gelembung "Bekerja di ..." yang sedang tampil (diperbarui langsung oleh liveUpdate)
+  let liveBusy = false, liveSig = '';
   let accSig = '';            // tanda isi panel akun terakhir (supaya tidak digambar ulang kalau tidak berubah)
   let settleT = null;         // pewaktu: halaman geser selesai -> halaman di bawahnya disembunyikan (hemat gambar ulang)
   let pendingMark = '';       // penanda yang sedang digambar; jadi timeline setelah berhasil
@@ -127,9 +129,39 @@
         }
       }
     }
-    if (running()) kids.push(el('div', { class: 'cpmsg ai wait', text: `Bekerja${job && job.lastAccount ? ' di ' + shortName(job.lastAccount) : ''}... (balasan tampil setelah selesai)` }));
+    if (running()) {
+      waitEl = el('div', { class: 'cpmsg ai wait', text: `Bekerja${job && job.lastAccount ? ' di ' + shortName(job.lastAccount) : ''}...` });
+      kids.push(waitEl);
+      liveBusy = false; liveSig = '';
+      setTimeout(liveUpdate, 0);   // isi langsung begitu gelembung terpasang, tanpa menunggu tick berikutnya
+    } else waitEl = null;
     if (!kids.length) kids.push(el('div', { class: 'cmempty', text: 'Tulis brief proyek di kolom chat bawah, lalu ➤.\nSetelah itu ketuk ▶ untuk mulai.' }));
     return kids;
+  }
+
+  // Kemajuan langsung: salinan balasan Claude yang sedang mengalir di sesi tersembunyi + fase + lama. Hanya mengubah teks satu gelembung.
+  const FASE = { 'tunggu-composer': 'membuka chat', siap: 'siap', loginHelp: 'menyambung', unggah: 'mengunggah lampiran', kirim: 'mengirim prompt', kerja: 'Claude menulis', unduh: 'mengunduh zip', data: 'mengambil data chat' };
+  async function liveUpdate() {
+    if (liveBusy || !waitEl || !running() || !shown(page)) return;
+    const G = (typeof P !== 'undefined' && P.GeckoBrowser) || null;
+    if (!G || !G.workLive) return;
+    liveBusy = true;
+    try {
+      const r = await G.workLive();
+      if (!waitEl || !r || !r.active) return;
+      const f = String(r.fase || '').split(':')[0];
+      const head = `Bekerja${job && job.lastAccount ? ' di ' + shortName(job.lastAccount) : ''} · ${FASE[f] || f || 'memulai'} · ${RC.fmtDur((r.detik || 0) * 1000)}`;
+      const body = String(r.partial || '');
+      const sig = head + '|' + body.length;
+      if (sig === liveSig) return;
+      liveSig = sig;
+      // Ujung balasan saja (maks 1500 karakter) supaya gelembung tetap ringan
+      const tail = body.length > 1500 ? '…' + body.slice(-1500) : body;
+      waitEl.textContent = head + (tail ? '\n\n' + tail : '');
+      waitEl.classList.toggle('live', !!tail);
+      const stick = msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 160;
+      if (stick) msgsEl.scrollTop = msgsEl.scrollHeight;
+    } catch (_) { /* abaikan */ } finally { liveBusy = false; }
   }
 
   async function renderMsgs(force) {
@@ -456,7 +488,7 @@
   }
   function tick() {
     if (document.hidden) return;   // aplikasi di latar belakang: tidak perlu menggambar apa pun
-    if (shown(page)) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) refreshFiles(); }
+    if (shown(page)) { renderHead(); renderAccounts(); renderMsgs(); refreshLog(); if (running()) { refreshFiles(); liveUpdate(); } }
     if (shown(listPage)) renderProjects();
   }
 
